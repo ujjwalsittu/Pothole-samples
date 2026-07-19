@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import type { Annotation, PolygonPoint } from '@pothole/shared';
 import {
   CONTENT_GUIDELINES,
@@ -434,6 +435,12 @@ export function SampleDetailPanel({
         <div className="muted small mt4">
           by <strong>{sampleUserLabel(sample)}</strong> · captured {formatDate(sample.capturedAt)} ·{' '}
           {sample.lat.toFixed(5)}, {sample.lng.toFixed(5)}
+          {!isVideo ? (
+            <>
+              {' · '}
+              <Link to={`/map?focus=${sample.lat.toFixed(6)},${sample.lng.toFixed(6)}`}>🗺 open in map</Link>
+            </>
+          ) : null}
         </div>
       </div>
 
@@ -499,7 +506,15 @@ export function SampleDetailPanel({
       {/* video-specific: GPS map + speed stats */}
       {isVideo ? (
         <div className="card">
-          <h4 className="card-title">GPS track</h4>
+          <div className="row between wrap gap">
+            <h4 className="card-title">GPS track</h4>
+            <Link
+              className="btn btn-sm btn-ghost"
+              to={`/map?focus=${sample.lat.toFixed(6)},${sample.lng.toFixed(6)}`}
+            >
+              🗺 Open in map
+            </Link>
+          </div>
           {track && track.points.length > 0 ? (
             <>
               <GpsTrackMap points={track.points} cursor={cursor} markers={markers} />

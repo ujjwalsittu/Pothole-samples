@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { AdminSampleRow } from '../api/client';
 import { errorMessage, listSamples, sampleUserLabel } from '../api/client';
 import { SampleDetailPanel } from '../components/SampleDetailPanel';
+import { Thumb } from '../components/Thumb';
 import { Chip, EmptyState, ErrorState, LoadingPanel, formatDate } from '../components/ui';
 
 export function ReviewQueuePage() {
@@ -74,7 +75,7 @@ export function ReviewQueuePage() {
                 className={`queue-item${s.id === selectedId ? ' selected' : ''}`}
                 onClick={() => setSelectedId(s.id)}
               >
-                <span className="thumb">{s.mediaType === 'video' ? '🎬' : '📷'}</span>
+                <Thumb sampleId={s.id} mediaType={s.mediaType} />
                 <div className="queue-item-main">
                   <div className="queue-item-user">{sampleUserLabel(s)}</div>
                   <div className="muted small">{formatDate(s.capturedAt)}</div>

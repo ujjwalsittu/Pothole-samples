@@ -8,8 +8,14 @@ const NAV = [
   { to: '/approvals', label: 'Approvals', icon: '✓' },
   { to: '/review', label: 'Review Queue', icon: '☰' },
   { to: '/samples', label: 'Samples', icon: '▤' },
+  { to: '/map', label: 'Map', icon: '🗺' },
+  { to: '/campaigns', label: 'Campaigns', icon: '◎' },
+  { to: '/packages', label: 'Packages', icon: '▣' },
+  { to: '/leaderboard', label: 'Leaderboard', icon: '🏆' },
   { to: '/settlements', label: 'Settlements', icon: '₹' },
+  { to: '/datasets', label: 'Datasets', icon: '🎓' },
   { to: '/exports', label: 'Exports', icon: '⇩' },
+  { to: '/audit', label: 'Audit', icon: '☲' },
 ] as const;
 
 const TITLES: Record<string, string> = {
@@ -17,8 +23,14 @@ const TITLES: Record<string, string> = {
   '/approvals': 'Approvals',
   '/review': 'Review Queue',
   '/samples': 'Samples',
+  '/map': 'Map',
+  '/campaigns': 'Campaigns',
+  '/packages': 'Packages',
+  '/leaderboard': 'Leaderboard',
   '/settlements': 'Settlements',
+  '/datasets': 'Datasets',
   '/exports': 'Exports',
+  '/audit': 'Audit log',
 };
 
 export function Layout() {

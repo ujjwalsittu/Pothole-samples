@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { LedgerEntry, User } from '@pothole/shared';
+import { SETTLEMENT_CONFIRM_THRESHOLD_INR } from '@pothole/shared';
 import type { BalanceInfo, SettlementRow } from '../api/client';
 import {
+  cancelSettlement,
+  confirmSettlement,
   createSettlement,
   downloadAuthedFile,
   errorMessage,
@@ -10,6 +13,7 @@ import {
   listSettlements,
   listUsers,
 } from '../api/client';
+import { useMe } from '../auth/auth';
 import {
   Avatar,
   Chip,
@@ -28,6 +32,7 @@ interface UserWithBalance extends User {
 }
 
 export function SettlementsPage() {
+  const { me } = useMe();
   const [users, setUsers] = useState<UserWithBalance[] | null>(null);
   const [usersErr, setUsersErr] = useState<string | null>(null);
   const [history, setHistory] = useState<SettlementRow[] | null>(null);
@@ -95,8 +100,45 @@ export function SettlementsPage() {
   const settlementUserLabel = (s: SettlementRow): string =>
     s.user?.fullName || s.userName || userById.get(s.userId)?.fullName || s.userEmail || s.userId;
 
+  const awaiting = (history ?? []).filter((s) => s.confirmState === 'awaiting_confirmation');
+
   return (
     <div className="stack">
+      {awaiting.length > 0 ? (
+        <div className="card confirm-card">
+          <h4 className="card-title">
+            ⏳ Awaiting confirmation <Chip tone="warn">{awaiting.length}</Chip>
+          </h4>
+          <p className="muted small">
+            Settlements of {formatInr(SETTLEMENT_CONFIRM_THRESHOLD_INR)} or more need a{' '}
+            <strong>second admin</strong> to confirm — the initiating admin cannot confirm their own.
+          </p>
+          <div className="table-scroll">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Collector</th>
+                  <th>Amount</th>
+                  <th>UTR reference</th>
+                  <th>Initiated by</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {awaiting.map((s) => (
+                  <PendingConfirmRow
+                    key={s.id}
+                    row={s}
+                    label={settlementUserLabel(s)}
+                    meId={me.id}
+                    onDone={refresh}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
       <div className="card">
         <div className="row between">
           <h4 className="card-title">Payable balances</h4>
@@ -190,6 +232,7 @@ export function SettlementsPage() {
                   <th>UTR reference</th>
                   <th>Proof</th>
                   <th>Settled by</th>
+                  <th>Confirmed by</th>
                   <th>Settled at</th>
                 </tr>
               </thead>
@@ -201,13 +244,20 @@ export function SettlementsPage() {
                     </td>
                     <td>{formatInr(s.amountInr)}</td>
                     <td>
-                      <Chip tone={stateTone(s.state)}>{s.state}</Chip>
+                      {s.confirmState === 'awaiting_confirmation' ? (
+                        <Chip tone="warn">awaiting confirmation</Chip>
+                      ) : s.confirmState === 'cancelled' ? (
+                        <Chip tone="bad">cancelled</Chip>
+                      ) : (
+                        <Chip tone={stateTone(s.state)}>{s.state}</Chip>
+                      )}
                     </td>
                     <td className="mono small">{s.utrReference || '—'}</td>
                     <td>
                       {s.proofUrl ? <ProofLink url={s.proofUrl} id={s.id} /> : <span className="muted">—</span>}
                     </td>
-                    <td className="muted">{s.settledBy || '—'}</td>
+                    <td className="muted">{s.settledBy || s.initiatedByName || s.initiatedBy || '—'}</td>
+                    <td className="muted">{s.confirmedByName || s.confirmedBy || '—'}</td>
                     <td className="muted">{formatDate(s.settledAt ?? s.createdAt)}</td>
                   </tr>
                 ))}
@@ -234,6 +284,73 @@ export function SettlementsPage() {
 }
 
 /* ------------------------------------------------------------------ */
+
+function PendingConfirmRow({
+  row,
+  label,
+  meId,
+  onDone,
+}: {
+  row: SettlementRow;
+  label: string;
+  meId: string;
+  onDone: () => void;
+}) {
+  const [busy, setBusy] = useState<'confirm' | 'cancel' | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const isInitiator = row.initiatedBy != null && row.initiatedBy === meId;
+
+  const act = async (kind: 'confirm' | 'cancel') => {
+    setBusy(kind);
+    setErr(null);
+    try {
+      if (kind === 'confirm') await confirmSettlement(row.id);
+      else await cancelSettlement(row.id);
+      onDone();
+    } catch (e) {
+      setErr(errorMessage(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <tr>
+      <td>
+        <strong>{label}</strong>
+      </td>
+      <td>
+        <strong className="accent-text">{formatInr(row.amountInr)}</strong>
+      </td>
+      <td className="mono small">{row.utrReference || '—'}</td>
+      <td className="muted">{row.initiatedByName || row.initiatedBy || '—'}</td>
+      <td>
+        <span className="row gap wrap">
+          <button
+            className="btn btn-sm btn-primary"
+            disabled={busy !== null || isInitiator}
+            title={
+              isInitiator
+                ? 'You initiated this settlement — a different admin must confirm it (two-admin rule).'
+                : 'Confirm this settlement as the second admin'
+            }
+            onClick={() => void act('confirm')}
+          >
+            {busy === 'confirm' ? 'Confirming…' : '✔ Confirm'}
+          </button>
+          <button
+            className="btn btn-sm btn-danger"
+            disabled={busy !== null}
+            onClick={() => void act('cancel')}
+          >
+            {busy === 'cancel' ? 'Cancelling…' : 'Cancel'}
+          </button>
+          {err ? <span className="error-text small">⚠ {err}</span> : null}
+        </span>
+      </td>
+    </tr>
+  );
+}
 
 function ProofLink({ url, id }: { url: string; id: string }) {
   const [busy, setBusy] = useState(false);
@@ -347,6 +464,15 @@ function SettleModal({
           </span>
         ) : null}
       </label>
+      {Number.isFinite(amountNum) && amountNum >= SETTLEMENT_CONFIRM_THRESHOLD_INR ? (
+        <div className="notice">
+          <span className="small">
+            ⚠ {formatInr(amountNum)} is at/above the {formatInr(SETTLEMENT_CONFIRM_THRESHOLD_INR)}{' '}
+            threshold — this settlement will wait for a <strong>second admin's confirmation</strong>{' '}
+            before it is recorded as settled.
+          </span>
+        </div>
+      ) : null}
       {err ? <p className="error-text">⚠ {err}</p> : null}
       <div className="row gap end">
         <button className="btn btn-ghost" onClick={onClose} disabled={busy}>

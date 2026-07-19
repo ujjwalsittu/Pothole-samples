@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { User } from '@pothole/shared';
-import { approveUser, errorMessage, listUsers, patchUser, rejectUser } from '../api/client';
+import type { PackageInfo, User } from '@pothole/shared';
+import { approveUser, errorMessage, listPackages, listUsers, patchUser, rejectUser } from '../api/client';
 import {
   Avatar,
   Chip,
@@ -31,6 +31,19 @@ export function ApprovalsPage() {
   const [rejectTarget, setRejectTarget] = useState<User | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
+  const [packages, setPackages] = useState<PackageInfo[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    listPackages()
+      .then((p) => {
+        if (!cancelled) setPackages(p);
+      })
+      .catch(() => undefined); // tolerate: hide the package column if unavailable
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -88,7 +101,7 @@ export function ApprovalsPage() {
   }, [rejectTarget, rejectReason, refresh]);
 
   const doPatch = useCallback(
-    async (u: User, patch: { collectorStatus?: string; role?: string }) => {
+    async (u: User, patch: { collectorStatus?: string; role?: string; packageCode?: string }) => {
       setBusyId(u.id);
       setActionErr(null);
       try {
@@ -145,6 +158,7 @@ export function ApprovalsPage() {
                   <th>UPI ID</th>
                   <th>Signed up</th>
                   {tab === 'approved' ? <th>Role</th> : null}
+                  {tab === 'approved' && packages.length > 0 ? <th>Package</th> : null}
                   <th>Actions</th>
                 </tr>
               </thead>
@@ -204,6 +218,26 @@ export function ApprovalsPage() {
                             Promote to admin
                           </button>
                         )}
+                      </td>
+                    ) : null}
+                    {tab === 'approved' && packages.length > 0 ? (
+                      <td>
+                        <select
+                          value={u.packageCode}
+                          disabled={busyId === u.id}
+                          title="Assign earnings package"
+                          onChange={(e) => void doPatch(u, { packageCode: e.target.value })}
+                        >
+                          {packages.some((p) => p.code === u.packageCode) ? null : (
+                            <option value={u.packageCode}>{u.packageCode}</option>
+                          )}
+                          {packages.map((p) => (
+                            <option key={p.code} value={p.code} disabled={!p.active}>
+                              {p.code}
+                              {p.active ? '' : ' (inactive)'}
+                            </option>
+                          ))}
+                        </select>
                       </td>
                     ) : null}
                     <td>

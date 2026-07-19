@@ -4,6 +4,7 @@ import type { MediaType, SampleState } from '@pothole/shared';
 import type { AdminSampleRow } from '../api/client';
 import { errorMessage, listSamples, sampleUserLabel } from '../api/client';
 import { SampleDetailPanel } from '../components/SampleDetailPanel';
+import { Thumb } from '../components/Thumb';
 import { Chip, EmptyState, ErrorState, LoadingPanel, formatDate, stateTone } from '../components/ui';
 
 type ListableState = Extract<
@@ -132,7 +133,7 @@ export function SamplesPage() {
                 {filtered.map((s) => (
                   <tr key={s.id} onClick={() => openSample(s.id)}>
                     <td>
-                      <span className="thumb-mini">{s.mediaType === 'video' ? '🎬' : '📷'}</span>
+                      <Thumb sampleId={s.id} mediaType={s.mediaType} size="sm" />
                     </td>
                     <td>
                       <strong>{sampleUserLabel(s)}</strong>

@@ -41,9 +41,38 @@ Powered by Threemates Tech Ventures · v1.0.0
   "Settle" modal (amount prefilled with full balance, UTR reference, payment
   proof upload → multipart), settlement history with authenticated proof
   downloads, and a per-user full ledger drawer with running balance.
-- **Exports** — authenticated ZIP downloads (photos / videos / all) with live
-  progress bars, and Upload-to-Google-Drive with the returned folder link, or
-  a clear notice when the API has no Drive credentials (`NOT_CONFIGURED`).
+- **Annotation editing (admin)** — the review panel is a full annotator for
+  photos and paused video frames: draw new polygons (click-to-add, Enter/dbl-click
+  to close), drag vertices, insert via midpoint handles, double-click to delete
+  a vertex, per-annotation label dropdown, Accept/Reject status toggles
+  (green/red/amber), collector-vs-admin badges — all persisted optimistically
+  with rollback on API errors. Review decisions: Accept all / Partially accept
+  (requires ≥1 accepted and ≥1 rejected annotation) / Reject with reason.
+- **Map** — Leaflet + OpenStreetMap view of every sample (colored by state,
+  popups with authed thumbnails and detail links), toggleable campaign-zone
+  and road-quality heatmap layers (severity green→red).
+- **Campaigns** — geo-targeted boost zones with a click-to-draw polygon editor
+  on the map (drag markers to adjust, right-click to remove a vertex), boost
+  multiplier, active flag and date window; delete with confirmation.
+- **Packages** — earnings-package management (quotas, payout, chaining via
+  next-package) plus per-user package assignment on the Approvals page.
+- **Leaderboard** — month/all-time collector rankings with accepted counts,
+  earnings and streak days.
+- **Datasets** — versioned training exports with manifest history (sha256,
+  sample/annotation counts, train/val/test split badges, label counts),
+  manifest.json downloads, training/raw bundle downloads and the OSRM
+  map-matching trigger (graceful NOT_CONFIGURED notice).
+- **Settlements two-admin flow** — settlements ≥ ₹5000 wait for a second
+  admin's confirmation; the initiator's Confirm button is disabled with an
+  explanatory tooltip, and history shows who confirmed.
+- **Audit log** — filterable admin action trail (server-side action prefix,
+  client-side actor filter), pretty-printed JSON detail expanders and
+  cursor-based "load more".
+- **Exports** — training bundle (no GPS, training-safe), raw testing bundle
+  (full GPS + all annotations) and legacy accepted ZIPs, all as authenticated
+  downloads with live progress bars; Upload-to-Google-Drive with a bundle
+  choice (training/raw) and a clear notice when the API has no Drive
+  credentials (`NOT_CONFIGURED`).
 
 ## Setup
 
@@ -112,8 +141,10 @@ with a sign-out option.
 - Sample state machine, speed/duration/GPS rules, content guidelines, payout
   quotas, labels and estimation helpers are all imported from
   `@pothole/shared` — nothing is duplicated here.
-- The GPS "map" is a self-contained SVG projection (bounding box +
-  latitude-corrected equirectangular), so no external map tiles or libraries
-  are loaded.
+- The review panel's GPS track view is a self-contained SVG projection
+  (works offline, no tiles); the dedicated Map/Campaigns pages use Leaflet
+  with OpenStreetMap tiles and link back and forth ("open in map").
+- Sample thumbnails are lazy-loaded authenticated blobs
+  (`/media/:id/thumb`) with a glyph fallback when the endpoint is missing.
 - The earnings ledger view tolerates a missing `/earnings/ledger` route
   (404 → graceful empty state).

@@ -1,8 +1,18 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import type { User } from '@pothole/shared';
-import type { AdminSampleRow } from '../api/client';
-import { errorMessage, getUserBalance, listSamples, listUsers, sampleUserLabel } from '../api/client';
+import type { Campaign, User } from '@pothole/shared';
+import type { AdminSampleRow, SettlementRow } from '../api/client';
+import {
+  errorMessage,
+  getUserBalance,
+  listCampaigns,
+  listDatasets,
+  listSamples,
+  listSettlements,
+  listUsers,
+  sampleUserLabel,
+} from '../api/client';
+import { Thumb } from '../components/Thumb';
 import { Chip, ErrorState, LoadingPanel, StatCard, formatDate, formatInr, stateTone } from '../components/ui';
 
 interface OverviewData {
@@ -13,6 +23,9 @@ interface OverviewData {
   rejected: number;
   autoRejected: number;
   totalPayable: number | null; // null → could not compute
+  activeCampaigns: number | null;
+  awaitingConfirmation: number | null;
+  datasetExports: number | null;
   recent: AdminSampleRow[];
 }
 
@@ -38,6 +51,13 @@ export function OverviewPage() {
           listUsers('approved').catch(() => [] as User[]),
         ]);
 
+      // Newer feature endpoints — tolerate absence (null → "—").
+      const [campaigns, settlements, datasets] = await Promise.all([
+        listCampaigns().catch(() => null as Campaign[] | null),
+        listSettlements().catch(() => null as SettlementRow[] | null),
+        listDatasets().catch(() => null),
+      ]);
+
       // Total payable balance: sum per-user balances (tolerant of failures).
       let totalPayable: number | null = null;
       try {
@@ -62,6 +82,11 @@ export function OverviewPage() {
         rejected: rejected.length + autoRejected.length,
         autoRejected: autoRejected.length,
         totalPayable,
+        activeCampaigns: campaigns ? campaigns.filter((c) => c.active).length : null,
+        awaitingConfirmation: settlements
+          ? settlements.filter((s) => s.confirmState === 'awaiting_confirmation').length
+          : null,
+        datasetExports: datasets ? datasets.length : null,
         recent,
       } satisfies OverviewData;
     })()
@@ -109,6 +134,29 @@ export function OverviewPage() {
             hint={data.totalPayable != null ? 'across approved collectors' : 'balance endpoint unavailable'}
           />
         </Link>
+        <Link to="/campaigns" className="plain-link">
+          <StatCard
+            label="Active campaigns"
+            value={data.activeCampaigns ?? '—'}
+            tone="accent"
+            hint={data.activeCampaigns != null ? 'boosted zones live' : 'endpoint unavailable'}
+          />
+        </Link>
+        <Link to="/settlements" className="plain-link">
+          <StatCard
+            label="Awaiting confirmation"
+            value={data.awaitingConfirmation ?? '—'}
+            tone={data.awaitingConfirmation ? 'warn' : undefined}
+            hint="settlements needing a 2nd admin"
+          />
+        </Link>
+        <Link to="/datasets" className="plain-link">
+          <StatCard
+            label="Dataset exports"
+            value={data.datasetExports ?? '—'}
+            hint={data.datasetExports != null ? 'versioned training bundles' : 'endpoint unavailable'}
+          />
+        </Link>
       </div>
 
       <div className="card">
@@ -119,7 +167,7 @@ export function OverviewPage() {
           <ul className="activity-list">
             {data.recent.map((s) => (
               <li key={s.id}>
-                <span className="thumb-mini">{s.mediaType === 'video' ? '🎬' : '📷'}</span>
+                <Thumb sampleId={s.id} mediaType={s.mediaType} size="sm" />
                 <div className="activity-main">
                   <div>
                     <strong>{sampleUserLabel(s)}</strong> uploaded a {s.mediaType}

@@ -649,6 +649,92 @@ kbd {
   padding: 10px 14px;
 }
 
+/* ---------------- thumbnails ---------------- */
+
+.thumb-wrap { overflow: hidden; position: relative; }
+.thumb-img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+/* ---------------- leaflet map ---------------- */
+
+.leaflet-host {
+  width: 100%;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: #0a101f;
+  z-index: 0;
+}
+.map-card { padding: 10px; }
+.map-legend { flex-wrap: wrap; }
+.legend-item { display: inline-flex; align-items: center; gap: 5px; }
+.legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+  border: 1px solid #0b1220;
+}
+.leaflet-container { font: inherit; }
+.leaflet-popup-content-wrapper, .leaflet-popup-tip {
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+}
+.leaflet-container a.leaflet-popup-close-button { color: var(--muted); }
+.map-popup { display: flex; flex-direction: column; gap: 6px; min-width: 170px; }
+.map-popup-thumb { width: 100%; max-height: 110px; object-fit: cover; border-radius: 6px; }
+.map-popup-title { font-weight: 600; }
+.map-popup-meta { color: var(--muted); font-size: 12px; }
+.dot-marker { background: transparent; border: none; }
+
+/* ---------------- forms / drawers (wide) ---------------- */
+
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 16px;
+  align-items: end;
+}
+.form-grid .span2 { grid-column: span 2; }
+@media (max-width: 640px) { .form-grid { grid-template-columns: 1fr; } .form-grid .span2 { grid-column: auto; } }
+.drawer-wide { width: min(880px, 96vw); }
+
+/* ---------------- leaderboard ---------------- */
+
+.rank-badge { font-weight: 700; }
+tr.top-rank { background: rgba(245, 158, 11, 0.05); }
+
+/* ---------------- audit ---------------- */
+
+.audit-row:hover { background: var(--panel-2); }
+.audit-detail-row td { background: #0a101f; }
+.audit-detail {
+  margin: 0;
+  padding: 10px 12px;
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  font-size: 12px;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 260px;
+  overflow: auto;
+}
+.nowrap { white-space: nowrap; }
+.load-more-row { justify-content: center; padding: 12px; }
+.center-h { justify-content: center; }
+.label-chips { max-width: 340px; }
+
+/* ---------------- settlements confirmation ---------------- */
+
+.confirm-card { border-color: rgba(251, 191, 36, 0.5); }
+
+/* ---------------- inline download ---------------- */
+
+.dl-inline { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.dl-inline .progress-wrap { min-width: 160px; }
+.progress-bar { display: block; }
+.progress-fill { display: block; }
+
 /* ---------------- responsive ---------------- */
 
 @media (max-width: 760px) {

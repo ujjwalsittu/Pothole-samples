@@ -2,13 +2,20 @@ import type {
   Annotation,
   AnnotationStatus,
   ApiResponse,
+  AuditLogEntry,
+  Campaign,
+  DatasetManifest,
   GpsPoint,
+  LeaderboardEntry,
   LedgerEntry,
+  PackageInfo,
   PolygonPoint,
   PotholeEstimate,
+  RoadQualityCell,
   Sample,
   SampleState,
   Settlement,
+  SettlementConfirmState,
   User,
 } from '@pothole/shared';
 
@@ -153,6 +160,12 @@ export type SettlementRow = Settlement & {
   user?: Partial<User> | null;
   userName?: string;
   userEmail?: string;
+  /** Two-admin confirmation flow (≥ ₹5000). */
+  confirmState?: SettlementConfirmState | null;
+  initiatedBy?: string | null;
+  initiatedByName?: string | null;
+  confirmedBy?: string | null;
+  confirmedByName?: string | null;
 };
 
 export function sampleUserLabel(row: AdminSampleRow | null | undefined): string {
@@ -165,7 +178,21 @@ function asArray(data: unknown): any[] {
   if (Array.isArray(data)) return data;
   if (data && typeof data === 'object') {
     const obj = data as Record<string, unknown>;
-    for (const key of ['items', 'rows', 'users', 'samples', 'settlements', 'entries', 'ledger']) {
+    for (const key of [
+      'items',
+      'rows',
+      'users',
+      'samples',
+      'settlements',
+      'entries',
+      'ledger',
+      'campaigns',
+      'packages',
+      'datasets',
+      'cells',
+      'leaderboard',
+      'audit',
+    ]) {
       if (Array.isArray(obj[key])) return obj[key] as any[];
     }
   }
@@ -250,7 +277,7 @@ export function rejectUser(id: string, reason: string): Promise<unknown> {
 
 export function patchUser(
   id: string,
-  patch: { collectorStatus?: string; role?: string },
+  patch: { collectorStatus?: string; role?: string; packageCode?: string },
 ): Promise<unknown> {
   return request(`/api/v1/admin/users/${id}`, jsonInit('PATCH', patch));
 }
@@ -346,6 +373,112 @@ export async function createSettlement(
   return request(`/api/v1/admin/users/${userId}/settlements`, { method: 'POST', body: form });
 }
 
+export function confirmSettlement(settlementId: string): Promise<unknown> {
+  return request(`/api/v1/admin/settlements/${settlementId}/confirm`, jsonInit('POST', {}));
+}
+
+export function cancelSettlement(settlementId: string): Promise<unknown> {
+  return request(`/api/v1/admin/settlements/${settlementId}/cancel`, jsonInit('POST', {}));
+}
+
+/* ---------------- campaigns ---------------- */
+
+export interface CampaignBody {
+  name: string;
+  description: string | null;
+  polygon: Array<{ lat: number; lng: number }>;
+  boost: number;
+  active: boolean;
+  startsAt: string | null;
+  endsAt: string | null;
+}
+
+export async function listCampaigns(): Promise<Campaign[]> {
+  const data = await request<unknown>('/api/v1/admin/campaigns');
+  return asArray(data) as Campaign[];
+}
+
+export function createCampaign(body: CampaignBody): Promise<unknown> {
+  return request('/api/v1/admin/campaigns', jsonInit('POST', body));
+}
+
+export function updateCampaign(id: string, body: Partial<CampaignBody>): Promise<unknown> {
+  return request(`/api/v1/admin/campaigns/${id}`, jsonInit('PATCH', body));
+}
+
+export function deleteCampaign(id: string): Promise<unknown> {
+  return request(`/api/v1/admin/campaigns/${id}`, { method: 'DELETE' });
+}
+
+/* ---------------- leaderboard / road quality / audit ---------------- */
+
+export async function getLeaderboard(period: 'month' | 'all'): Promise<LeaderboardEntry[]> {
+  const data = await request<unknown>(`/api/v1/leaderboard?period=${period}`);
+  return asArray(data) as LeaderboardEntry[];
+}
+
+export async function getRoadQuality(): Promise<RoadQualityCell[]> {
+  const data = await request<unknown>('/api/v1/admin/road-quality');
+  return asArray(data) as RoadQualityCell[];
+}
+
+export async function getAuditLog(opts: {
+  limit?: number;
+  before?: string;
+  action?: string;
+}): Promise<AuditLogEntry[]> {
+  const params = new URLSearchParams();
+  if (opts.limit) params.set('limit', String(opts.limit));
+  if (opts.before) params.set('before', opts.before);
+  if (opts.action) params.set('action', opts.action);
+  const qs = params.toString();
+  const data = await request<unknown>(`/api/v1/admin/audit${qs ? `?${qs}` : ''}`);
+  return asArray(data) as AuditLogEntry[];
+}
+
+/* ---------------- datasets / post-processing ---------------- */
+
+export async function listDatasets(): Promise<DatasetManifest[]> {
+  const data = await request<unknown>('/api/v1/admin/datasets');
+  return asArray(data) as DatasetManifest[];
+}
+
+export function datasetManifestPath(id: string): string {
+  return `/api/v1/admin/datasets/${id}/manifest.json`;
+}
+
+export function runMapMatch(sampleIds?: string[]): Promise<Record<string, unknown>> {
+  return request(
+    '/api/v1/admin/postprocess/map-match',
+    jsonInit('POST', sampleIds && sampleIds.length > 0 ? { sampleIds } : {}),
+  );
+}
+
+/* ---------------- packages ---------------- */
+
+export interface PackageBody {
+  code: string;
+  name: string;
+  videoQuota: number;
+  photoQuota: number;
+  payoutInr: number;
+  active: boolean;
+  nextPackageCode: string | null;
+}
+
+export async function listPackages(): Promise<PackageInfo[]> {
+  const data = await request<unknown>('/api/v1/admin/packages');
+  return asArray(data) as PackageInfo[];
+}
+
+export function createPackage(body: PackageBody): Promise<unknown> {
+  return request('/api/v1/admin/packages', jsonInit('POST', body));
+}
+
+export function updatePackage(code: string, body: Partial<PackageBody>): Promise<unknown> {
+  return request(`/api/v1/admin/packages/${encodeURIComponent(code)}`, jsonInit('PATCH', body));
+}
+
 /** Ledger view — tolerant: a 404 (route not mounted) renders as an empty ledger. */
 export async function getLedger(userId: string): Promise<LedgerEntry[]> {
   try {
@@ -375,16 +508,40 @@ export function exportToDrive(bundle: ExportBundle): Promise<
  * header (or dev-bypass headers) must go on the fetch itself.
  * Caller must revoke the returned URL when done.
  */
-export async function fetchMediaBlob(sampleId: string): Promise<string> {
-  const res = await authedFetch(`/api/v1/media/${sampleId}`);
+export function fetchMediaBlob(sampleId: string): Promise<string> {
+  return fetchAuthedBlobUrl(`/api/v1/media/${sampleId}`);
+}
+
+async function fetchAuthedBlobUrl(path: string): Promise<string> {
+  const res = await authedFetch(path);
   if (!res.ok) {
-    // Media errors may still use the JSON envelope.
     throw await parseEnvelope<never>(res).catch((e) =>
       isApiError(e) ? e : new ApiError('MEDIA_FAILED', `Media fetch failed (${res.status})`, res.status),
     );
   }
   const blob = await res.blob();
   return URL.createObjectURL(blob);
+}
+
+/**
+ * Thumbnail blob URLs, cached for the session (object URLs are kept alive
+ * so list re-renders never refetch).
+ */
+const thumbCache = new Map<string, Promise<string>>();
+
+export function fetchThumbBlob(sampleId: string): Promise<string> {
+  let p = thumbCache.get(sampleId);
+  if (!p) {
+    p = fetchAuthedBlobUrl(`/api/v1/media/${sampleId}/thumb`);
+    p.catch(() => thumbCache.delete(sampleId)); // allow retry after failures
+    thumbCache.set(sampleId, p);
+  }
+  return p;
+}
+
+/** Extracted video frame for a specific annotation. Not cached (rarely re-viewed). */
+export function fetchFrameBlob(sampleId: string, annotationId: string): Promise<string> {
+  return fetchAuthedBlobUrl(`/api/v1/media/${sampleId}/frames/${annotationId}`);
 }
 
 export interface DownloadProgress {
