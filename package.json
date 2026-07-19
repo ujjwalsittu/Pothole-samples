@@ -6,13 +6,15 @@
   "workspaces": [
     "packages/*",
     "apps/api",
-    "apps/admin"
+    "apps/admin",
+    "tools/*"
   ],
   "scripts": {
     "api": "npm run dev --workspace apps/api",
     "admin": "npm run dev --workspace apps/admin",
     "mobile": "cd apps/mobile && npm start",
     "migrate": "npm run migrate --workspace apps/api",
+    "deploy": "node tools/deploy/index.mjs",
     "build": "npm run build --workspace apps/api && npm run build --workspace apps/admin"
   },
   "engines": {

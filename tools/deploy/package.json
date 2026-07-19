@@ -1,0 +1,13 @@
+{
+  "name": "@pothole/deploy",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Interactive deployer for PotholeCollect (Railway / AWS Lightsail)",
+  "bin": { "pothole-deploy": "./index.mjs" },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "picocolors": "^1.0.1",
+    "prompts": "^2.4.2"
+  }
+}

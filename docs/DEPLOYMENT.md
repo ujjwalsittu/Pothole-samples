@@ -29,6 +29,23 @@ configured, splash-checked, and built for dev and the stores.
 
 ---
 
+## 0b. One-command deploy CLI
+
+Everything in §1–2 (Railway) and §2b (Lightsail) can be driven by the
+interactive deployer instead of by hand:
+
+```bash
+npm run deploy               # from the repo root
+npm run deploy -- --dry-run  # rehearse without executing anything
+```
+
+It asks for domains/Auth0/Resend credentials, provisions the target
+(Railway project + Postgres + env vars + deploy, or Lightsail instance +
+static IP + S3/IAM + full server setup + nginx + certbot) and finishes with
+the Auth0/mobile checklist. See `tools/deploy/README.md`.
+
+---
+
 ## 1. API on Railway
 
 ### 1.1 Project + database
