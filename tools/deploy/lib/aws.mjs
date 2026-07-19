@@ -434,25 +434,55 @@ export async function deployAws(cfg) {
         return false;
       }
     };
+    const chmod600 = (p) => {
+      try {
+        if ((fs.statSync(p).mode & 0o077) !== 0) {
+          fs.chmodSync(p, 0o600);
+          note(`chmod 600 ${p}`);
+        }
+      } catch {
+        /* best effort */
+      }
+    };
+
+    // Explicit override: --pem <path> (or PEM_PATH env) wins outright.
+    const override = cfg.pemOverride || process.env.PEM_PATH;
+    if (override) {
+      const p = override.trim().replace(/^~(?=$|\/)/, os.homedir());
+      if (!fs.existsSync(p)) throw new Error(`--pem file not found: ${p}`);
+      chmod600(p);
+      if (!probe(p)) throw new Error(`--pem key was refused by ubuntu@${ip}: ${p}`);
+      pemPath = p;
+      setArtifact('pemPath', pemPath);
+      note(`Using key from --pem: ${p}`);
+      return;
+    }
+
     if (probe(pemPath)) return;
     warn(`ssh with ${pemPath} was refused — trying the region default key…`);
-    const defPem = path.join(os.homedir(), '.ssh', `lightsail-default-${cfg.region}.pem`);
-    if (!fs.existsSync(defPem)) {
-      const out = aws(['lightsail', 'download-default-key-pair']);
-      const pem = JSON.parse(out).privateKeyBase64;
-      if (!pem) throw new Error('no privateKeyBase64 in download-default-key-pair response');
-      fs.writeFileSync(defPem, pem, { mode: 0o600 });
-    }
-    if (probe(defPem)) {
-      pemPath = defPem;
-      setArtifact('pemPath', pemPath);
-      note(`Using region default key: ${defPem}`);
-      return;
+    // ANY failure here (download error, missing default key, refused probe)
+    // must fall through to the manual prompt below — never abort the step.
+    try {
+      const defPem = path.join(os.homedir(), '.ssh', `lightsail-default-${cfg.region}.pem`);
+      if (!fs.existsSync(defPem)) {
+        const out = aws(['lightsail', 'download-default-key-pair']);
+        const pem = out ? JSON.parse(out).privateKeyBase64 : null;
+        if (!pem) throw new Error('no privateKeyBase64 in response');
+        fs.writeFileSync(defPem, pem, { mode: 0o600 });
+      }
+      if (probe(defPem)) {
+        pemPath = defPem;
+        setArtifact('pemPath', pemPath);
+        note(`Using region default key: ${defPem}`);
+        return;
+      }
+      warn('The region default key was refused too.');
+    } catch (err) {
+      warn(`Could not use the region default key (${String(err?.message ?? err).slice(0, 120)})`);
     }
 
     // Last resort: ask the user for a pem they downloaded themselves
     // (e.g. from the Lightsail console → Account → SSH keys).
-    warn('The region default key was refused too.');
     note('Download the key for this instance from the Lightsail console');
     note('(Account → SSH keys, or the instance page) and enter its path below.');
     for (let attempt = 1; attempt <= 5; attempt++) {
@@ -466,14 +496,7 @@ export async function deployAws(cfg) {
         continue;
       }
       // ssh refuses keys with open permissions — always tighten to 600.
-      try {
-        if ((fs.statSync(p).mode & 0o077) !== 0) {
-          fs.chmodSync(p, 0o600);
-          note(`chmod 600 ${p}`);
-        }
-      } catch {
-        /* best effort */
-      }
+      chmod600(p);
       if (probe(p)) {
         pemPath = p;
         setArtifact('pemPath', pemPath);

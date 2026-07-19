@@ -33,6 +33,8 @@ if (args.includes('--help') || args.includes('-h')) {
               separate state file (.deploy-state.dryrun.json).
   --fresh     Discard any saved deployment state and start over (no prompt).
   --state     Print the saved deployment state (secrets masked) and exit.
+  --pem <path>  Use this SSH private key for Lightsail provisioning
+              (skips automatic key detection; PEM_PATH env also works).
 `);
   process.exit(0);
 }
@@ -144,6 +146,11 @@ if (!resumed) {
   // Persist immediately: a crash right after the questionnaire is resumable.
   saveState({ target, answers: cfg });
 }
+
+// --pem <path>: explicit SSH key override for the Lightsail provisioning
+// steps (not persisted — read fresh on every launch).
+const pemIdx = args.indexOf('--pem');
+if (pemIdx !== -1 && args[pemIdx + 1]) cfg.pemOverride = args[pemIdx + 1];
 
 let result;
 if (target === 'railway') {
