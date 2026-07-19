@@ -143,6 +143,22 @@ in a local queue) and upload automatically — in small resumable chunks that
 survive flaky networks — whenever connectivity returns. Watch progress in the
 queue screen; retry manually any time.
 
+### 2.4b Guidance, boost zones, ranks
+
+- **Capture guidance** — while capturing, an on-device advisor nudges you if
+  the camera is pointed at the sky or the ground ("Point the camera at the
+  road ahead") or if you haven't started moving in video mode. With a TFLite
+  road-detection model installed (see `apps/mobile/README.md`) the advisor
+  upgrades to real frame analysis; without it a sensor-based heuristic runs.
+- **Boost zones** — admins can declare campaign zones ("we need this area
+  covered"). The dashboard shows zones near you with their payout multiplier
+  (e.g. 1.5×); samples captured inside an active zone earn the boosted rate
+  automatically.
+- **Ranks & streaks** — the Ranks tab shows the monthly/all-time leaderboard
+  and your streak (consecutive days with an accepted sample).
+- **Notifications** — approval, sample decisions, and settlements arrive as
+  push notifications (plus email).
+
 ### 2.5 Statuses, earnings, and payouts
 
 - **Pending review** → an admin is checking your sample.
@@ -199,12 +215,33 @@ Then decide:
   the collector still gets full credit.
 - **Reject** — with a reason; the collector must capture a new sample.
 
+### 3.3b Map, campaigns, and packages
+
+- **Map page** — every sample plotted on an OpenStreetMap view (colored by
+  state, thumbnail popups), with toggleable layers for campaign zones and the
+  road-quality heatmap.
+- **Campaigns** — draw a polygon on the map, set a payout boost and date
+  window, and collectors in that area see it as a boost zone. Samples
+  captured inside credit at the boosted rate.
+- **Packages** — create/edit earnings packages (quotas, payout, active flag)
+  and chain them: when a collector completes a package, the configured next
+  package starts automatically. Individual users can be moved between
+  packages.
+- **Leaderboard** — the same ranks collectors see, with earnings and streaks.
+
 ### 3.4 Settlements
 
 *Settlements* shows every collector's earned/settled/balance. Settle
 manually: enter the amount (defaults to full balance), the UPI/UTR reference,
 and upload the payment proof. The ledger marks earnings settled oldest-first
 and the collector is emailed.
+
+**Two-admin control**: settlements of ₹5000 or more don't execute
+immediately — they wait in *awaiting confirmation* until a **different**
+admin confirms (the initiator cannot confirm their own settlement). Every
+admin action (approvals, reviews, annotation edits, settlements, campaign
+and package changes, exports) is recorded in the **Audit log** with actor,
+target, and details.
 
 ### 3.5 Exports — training vs. testing data
 
@@ -217,6 +254,31 @@ Two purpose-built bundles (plus Google Drive upload of either):
 
 Raw footage and raw GPS are **never deleted** from storage, regardless of
 exports — the raw record is permanent.
+
+**Extracted frames** — when a video sample is accepted, the exact frame of
+every approved annotation is extracted with ffmpeg and shipped in the
+training bundle as a labeled image, so videos contribute directly to
+image-based detection training.
+
+**Dataset versioning** — every training export records a manifest (sample
+IDs, per-file hashes, label counts, split assignment, bundle sha256) in the
+*Datasets* page, so any model run can name the exact dataset it trained on.
+
+**Train/val/test splits** — samples are split 80/10/10 deterministically by
+*collector + location cell* (geohash), never randomly. The same collector's
+captures of the same area always land in the same split, so the model is
+never validated on near-duplicates of scenes it trained on.
+
+**Coordinate correction (map-matching)** — with an OSRM server configured,
+admins can run a post-processing pass that snaps raw GPS tracks to the road
+network and recomputes every video annotation's coordinates from its
+timeline position. Corrected coordinates are stored alongside the originals
+(never overwriting them) and included in the raw bundle.
+
+**Road-quality index** — accepted annotations aggregate into ~150 m map
+cells with a 0–100 severity index (from pothole density), rendered as a
+heatmap layer on the admin map — a per-road view of where the worst roads
+are.
 
 ---
 

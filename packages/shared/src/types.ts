@@ -171,6 +171,85 @@ export interface DashboardStats {
   balanceInr: number;
 }
 
+/** A configurable earnings package (packages table; DEFAULT_PACKAGE seeds one). */
+export interface PackageInfo {
+  code: string;
+  name: string;
+  videoQuota: number;
+  photoQuota: number;
+  payoutInr: number;
+  active: boolean;
+  /** Package auto-assigned when this one completes (null = stop). */
+  nextPackageCode: string | null;
+}
+
+/** A geo-targeted collection campaign ("we need this zone covered"). */
+export interface Campaign {
+  id: string;
+  name: string;
+  description: string | null;
+  /** Zone boundary as a closed polygon of [lat, lng] vertices. */
+  polygon: Array<{ lat: number; lng: number }>;
+  /** Payout multiplier for samples captured inside the zone. */
+  boost: number;
+  active: boolean;
+  startsAt: string | null;
+  endsAt: string | null;
+  createdAt: string;
+}
+
+export interface LeaderboardEntry {
+  rank: number;
+  userId: string;
+  displayName: string;
+  acceptedSamples: number;
+  earnedInr: number;
+  /** Consecutive days (ending today/yesterday) with an accepted sample. */
+  streakDays: number;
+  isMe: boolean;
+}
+
+export type DatasetSplit = 'train' | 'val' | 'test';
+
+/** Manifest recorded for every training-bundle export (dataset versioning). */
+export interface DatasetManifest {
+  id: string;
+  createdAt: string;
+  createdBy: string;
+  /** sha256 of the zip actually produced. */
+  bundleSha256: string;
+  sampleCount: number;
+  annotationCount: number;
+  labelCounts: Record<string, number>;
+  splitCounts: Record<DatasetSplit, number>;
+  /** Per-sample assignment, keyed by sampleId. */
+  samples: Array<{ sampleId: string; mediaType: MediaType; split: DatasetSplit; sha256: string }>;
+}
+
+/** One aggregated road-quality cell (geohash-based). */
+export interface RoadQualityCell {
+  geohash: string;
+  lat: number;
+  lng: number;
+  sampleCount: number;
+  potholeCount: number;
+  /** 0 (good) .. 100 (very bad), from pothole density + severity. */
+  severityIndex: number;
+}
+
+export interface AuditLogEntry {
+  id: string;
+  actorId: string;
+  actorName: string;
+  action: string; // e.g. 'user.approve', 'sample.review', 'settlement.confirm'
+  targetType: string;
+  targetId: string;
+  detail: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+export type SettlementConfirmState = 'awaiting_confirmation' | 'confirmed' | 'cancelled';
+
 /** Standard API envelope. */
 export interface ApiOk<T> { ok: true; data: T; }
 export interface ApiErr { ok: false; error: { code: string; message: string }; }
