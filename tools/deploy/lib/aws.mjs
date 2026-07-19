@@ -277,6 +277,34 @@ export async function deployAws(cfg) {
     { manual: `aws lightsail get-blueprints --profile ${PROFILE}`, optional: true },
   );
 
+  /* -------- SSH key (BEFORE instance creation so it can be attached) -------- */
+  section('SSH key');
+  let pemPath = path.join(os.homedir(), '.ssh', `${KEY_NAME}.pem`);
+  // 'created' → our named key pair exists in Lightsail and can be passed to
+  // create-instances; 'default' → we only hold the region default key.
+  let keySource = getArtifact('keySource') ?? 'created';
+  if (fs.existsSync(pemPath) && getArtifact('keySource')) {
+    skipStep(`Create key pair ${KEY_NAME}`, `reusing existing ${pemPath} (${keySource})`);
+  } else {
+    await runStep(`Create key pair ${KEY_NAME} → ${pemPath}`, () => {
+      let out = aws(['lightsail', 'create-key-pair', '--key-pair-name', KEY_NAME], { allowFail: true });
+      keySource = 'created';
+      if (!out) {
+        // Name may exist without a local pem, or creation failed → use the
+        // region default key (create-instances then must NOT name a key).
+        out = aws(['lightsail', 'download-default-key-pair']);
+        keySource = 'default';
+      }
+      if (isDryRun()) return;
+      const pem = JSON.parse(out).privateKeyBase64;
+      if (!pem) throw new Error('no privateKeyBase64 in response');
+      fs.mkdirSync(path.dirname(pemPath), { recursive: true });
+      fs.writeFileSync(pemPath, pem, { mode: 0o600 });
+    }, { manual: `aws lightsail create-key-pair --key-pair-name ${KEY_NAME} --profile ${PROFILE}` });
+  }
+  setArtifact('pemPath', pemPath);
+  setArtifact('keySource', keySource);
+
   // No re-confirmation when the create step already succeeded in a prior run.
   if (!isStepDone(`Create instance ${INSTANCE}`)) {
     const confirmCreate = await confirm(
@@ -304,6 +332,9 @@ export async function deployAws(cfg) {
             blueprint,
             '--bundle-id',
             bundleId,
+            // Attach OUR key pair — without this the instance gets the
+            // region default key and ssh with our pem is refused.
+            ...(keySource === 'created' ? ['--key-pair-name', KEY_NAME] : []),
           ]),
         `Instance ${INSTANCE}`,
       ),
@@ -386,33 +417,44 @@ export async function deployAws(cfg) {
     }
   }
 
-  /* -------- SSH key -------- */
-  section('SSH key');
-  const pemPath = path.join(os.homedir(), '.ssh', `${KEY_NAME}.pem`);
-  if (fs.existsSync(pemPath)) {
-    skipStep(`Create key pair ${KEY_NAME}`, `reusing existing ${pemPath}`);
-  } else {
-    await runStep(`Create key pair ${KEY_NAME} → ${pemPath}`, () => {
-      let out = aws(['lightsail', 'create-key-pair', '--key-pair-name', KEY_NAME], { allowFail: true });
-      let field = 'privateKeyBase64';
-      if (!out) {
-        // Key pair may already exist server-side, or creation failed → default key.
-        out = aws(['lightsail', 'download-default-key-pair']);
-        field = 'privateKeyBase64';
-      }
-      if (isDryRun()) return;
-      const pem = JSON.parse(out)[field];
-      if (!pem) throw new Error('no privateKeyBase64 in response');
-      fs.mkdirSync(path.dirname(pemPath), { recursive: true });
-      fs.writeFileSync(pemPath, pem, { mode: 0o600 });
-    }, { manual: `aws lightsail create-key-pair --key-pair-name ${KEY_NAME} --profile ${PROFILE}` });
-  }
-  setArtifact('pemPath', pemPath);
-  warn(`Note: instances launched via CLI use the REGION's default key unless a key pair is specified;`);
-  console.log(pc.dim(`    if ssh with ${pemPath} is refused, fetch the default key: aws lightsail download-default-key-pair --profile ${PROFILE}`));
-
   /* -------- provision -------- */
   section('Server provisioning (docs/DEPLOYMENT.md §2b over SSH)');
+
+  // Probe SSH and pick the key that actually opens the instance. Instances
+  // created by OLDER versions of this CLI (or by hand) may carry the REGION
+  // DEFAULT key instead of pothole-deploy-key — fall back to it automatically.
+  await runStep('Verify SSH access (select working key)', async () => {
+    if (isDryRun()) return;
+    const probe = (pem) => {
+      try {
+        ssh(pem, ip, 'true');
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    if (probe(pemPath)) return;
+    warn(`ssh with ${pemPath} was refused — trying the region default key…`);
+    const defPem = path.join(os.homedir(), '.ssh', `lightsail-default-${cfg.region}.pem`);
+    if (!fs.existsSync(defPem)) {
+      const out = aws(['lightsail', 'download-default-key-pair']);
+      const pem = JSON.parse(out).privateKeyBase64;
+      if (!pem) throw new Error('no privateKeyBase64 in download-default-key-pair response');
+      fs.writeFileSync(defPem, pem, { mode: 0o600 });
+    }
+    if (!probe(defPem)) {
+      throw new Error(
+        `neither ${pemPath} nor the region default key opens ubuntu@${ip} — ` +
+          `check the instance's key pair in the Lightsail console`,
+      );
+    }
+    pemPath = defPem;
+    setArtifact('pemPath', pemPath);
+    note(`Using region default key: ${defPem}`);
+  }, {
+    manual: `ssh -i ${pemPath} ubuntu@${ip} true   # then: aws lightsail download-default-key-pair --profile ${PROFILE}`,
+    alwaysRun: true,
+  });
   // The generated Postgres password MUST be stable across resumes — the DB
   // user is created once, and .env must keep matching it.
   cfg.pgPassword = getArtifact('pgPassword') ?? crypto.randomBytes(12).toString('hex');
