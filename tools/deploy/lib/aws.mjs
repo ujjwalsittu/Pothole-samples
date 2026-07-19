@@ -11,6 +11,7 @@ import path from 'node:path';
 import pc from 'picocolors';
 import { run, runCapture, scp, ssh, which } from './exec.mjs';
 import { buildProvisionScript } from './remote.mjs';
+import { getArtifact, isStepDone, setArtifact } from './state.mjs';
 import {
   confirm,
   highlightBlock,
@@ -31,6 +32,21 @@ const STATIC_IP = 'pothole-ip';
 const KEY_NAME = 'pothole-deploy-key';
 const IAM_USER = 'pothole-app';
 const DRY_IP = '203.0.113.10';
+
+/** Treat AlreadyExists-style AWS errors as success (idempotent re-runs). */
+const EXISTS_RE =
+  /already ?(exists|owned|in ?use|attached)|BucketAlreadyOwnedByYou|BucketAlreadyExists|EntityAlreadyExists|Duplicate/i;
+function tolerateExists(fn, what) {
+  try {
+    return fn();
+  } catch (err) {
+    if (EXISTS_RE.test(String(err?.message ?? err))) {
+      note(`${what} already exists — reusing it.`);
+      return null;
+    }
+    throw err;
+  }
+}
 
 const FALLBACK_BUNDLES = [
   { id: 'micro_3_0', price: 7, ram: 1, cpu: 2 },
@@ -87,10 +103,11 @@ export async function deployAws(cfg) {
       },
       { manual: `aws configure sso --profile ${PROFILE}`, docs: DOCS },
     );
+    // alwaysRun: SSO sessions expire — refresh on every launch.
     await runStep(
       'SSO login (refresh session if needed)',
       () => run('aws', ['sso', 'login', '--profile', PROFILE]),
-      { manual: `aws sso login --profile ${PROFILE}`, optional: true },
+      { manual: `aws sso login --profile ${PROFILE}`, optional: true, alwaysRun: true },
     );
   } else {
     note(`Using your existing aws-cli profile "${PROFILE}" as-is (no credentials written).`);
@@ -101,56 +118,70 @@ export async function deployAws(cfg) {
       const out = aws(['sts', 'get-caller-identity']);
       if (out) note(`Account: ${JSON.parse(out).Account}`);
     },
-    { manual: `aws sts get-caller-identity --profile ${PROFILE}` },
+    { manual: `aws sts get-caller-identity --profile ${PROFILE}`, alwaysRun: true },
   );
 
   /* -------- plan picker -------- */
   section('Lightsail — instance plan');
-  let bundles = FALLBACK_BUNDLES;
-  await runStep(
-    'Fetch available bundles',
-    () => {
-      const out = aws([
-        'lightsail',
-        'get-bundles',
-        '--query',
-        "bundles[?isActive && contains(supportedPlatforms, 'LINUX_UNIX')].{id:bundleId,price:price,ram:ramSizeInGb,cpu:cpuCount}",
-      ]);
-      if (out) {
-        const parsed = JSON.parse(out);
-        if (Array.isArray(parsed) && parsed.length > 0) bundles = parsed;
-      }
-    },
-    { manual: `aws lightsail get-bundles --profile ${PROFILE}`, optional: true },
-  );
-  const recommendedIdx = Math.max(
-    0,
-    bundles.findIndex((b) => Number(b.ram) === (cfg.installDocker ? 4 : 2)),
-  );
-  const bundleId = await select(
-    `Instance plan${cfg.installDocker ? ' (4 GB recommended — OSRM preprocessing on-box)' : ' (2 GB recommended)'}`,
-    bundles.map((b) => ({
-      title: `$${b.price}/mo — ${b.ram} GB RAM, ${b.cpu} vCPU (${b.id})`,
-      value: b.id,
-    })),
-    recommendedIdx,
-  );
+  let bundleId = getArtifact('bundleId');
+  if (bundleId) {
+    note(`Reusing plan from previous run: ${bundleId}`);
+  } else {
+    let bundles = FALLBACK_BUNDLES;
+    await runStep(
+      'Fetch available bundles',
+      () => {
+        const out = aws([
+          'lightsail',
+          'get-bundles',
+          '--query',
+          "bundles[?isActive && contains(supportedPlatforms, 'LINUX_UNIX')].{id:bundleId,price:price,ram:ramSizeInGb,cpu:cpuCount}",
+        ]);
+        if (out) {
+          const parsed = JSON.parse(out);
+          if (Array.isArray(parsed) && parsed.length > 0) bundles = parsed;
+        }
+      },
+      { manual: `aws lightsail get-bundles --profile ${PROFILE}`, optional: true },
+    );
+    const recommendedIdx = Math.max(
+      0,
+      bundles.findIndex((b) => Number(b.ram) === (cfg.installDocker ? 4 : 2)),
+    );
+    bundleId = await select(
+      `Instance plan${cfg.installDocker ? ' (4 GB recommended — OSRM preprocessing on-box)' : ' (2 GB recommended)'}`,
+      bundles.map((b) => ({
+        title: `$${b.price}/mo — ${b.ram} GB RAM, ${b.cpu} vCPU (${b.id})`,
+        value: b.id,
+      })),
+      recommendedIdx,
+    );
+    setArtifact('bundleId', bundleId);
+  }
 
   /* -------- storage: S3 + IAM (optional) -------- */
   const s3 = { bucket: null, accessKeyId: null, secretAccessKey: null };
   if (cfg.storageChoice === 's3') {
     section('S3 + IAM (media storage)');
-    const bucket = `pothole-media-${crypto.randomBytes(3).toString('hex')}`;
+    // The random suffix MUST survive restarts — persist it before creating.
+    let bucket = getArtifact('s3Bucket');
+    if (!bucket) {
+      bucket = `pothole-media-${crypto.randomBytes(3).toString('hex')}`;
+      setArtifact('s3Bucket', bucket);
+    } else {
+      note(`Reusing bucket name from previous run: ${bucket}`);
+    }
     await runStep(
       `Create bucket ${bucket} (${cfg.region})`,
-      () => {
-        const args = ['s3api', 'create-bucket', '--bucket', bucket];
-        // us-east-1 must NOT send a LocationConstraint.
-        if (cfg.region !== 'us-east-1') {
-          args.push('--create-bucket-configuration', `LocationConstraint=${cfg.region}`);
-        }
-        aws(args);
-      },
+      () =>
+        tolerateExists(() => {
+          const args = ['s3api', 'create-bucket', '--bucket', bucket];
+          // us-east-1 must NOT send a LocationConstraint.
+          if (cfg.region !== 'us-east-1') {
+            args.push('--create-bucket-configuration', `LocationConstraint=${cfg.region}`);
+          }
+          aws(args);
+        }, `Bucket ${bucket}`),
       { manual: `aws s3api create-bucket --bucket ${bucket} --profile ${PROFILE}`, docs: DOCS },
     );
     await runStep(
@@ -202,9 +233,15 @@ export async function deployAws(cfg) {
           s3.accessKeyId = 'DRYRUNACCESSKEY';
           s3.secretAccessKey = 'DRYRUNSECRETKEY';
         }
+        // These CANNOT be re-fetched from AWS — persist immediately.
+        setArtifact('s3AccessKeyId', s3.accessKeyId);
+        setArtifact('s3SecretAccessKey', s3.secretAccessKey);
       },
       { manual: `aws iam create-access-key --user-name ${IAM_USER} --profile ${PROFILE}` },
     );
+    // On resume the step above is skipped — recover the persisted key.
+    s3.accessKeyId = getArtifact('s3AccessKeyId') ?? s3.accessKeyId;
+    s3.secretAccessKey = getArtifact('s3SecretAccessKey') ?? s3.secretAccessKey;
     s3.bucket = bucket;
     cfg.s3Bucket = bucket;
     cfg.s3Region = cfg.region;
@@ -217,7 +254,7 @@ export async function deployAws(cfg) {
 
   /* -------- instance -------- */
   section('Lightsail — instance');
-  let blueprint = 'ubuntu_24_04';
+  let blueprint = getArtifact('blueprintId') ?? 'ubuntu_24_04';
   await runStep(
     'Verify Ubuntu 24.04 blueprint',
     () => {
@@ -235,33 +272,41 @@ export async function deployAws(cfg) {
           blueprint = alt;
         }
       }
+      setArtifact('blueprintId', blueprint);
     },
     { manual: `aws lightsail get-blueprints --profile ${PROFILE}`, optional: true },
   );
 
-  const confirmCreate = await confirm(
-    `Create Lightsail instance "${INSTANCE}" (${bundleId}, ${blueprint}, ${cfg.availabilityZone})? This starts billing.`,
-    true,
-  );
-  if (!confirmCreate) {
-    console.log(pc.red('Instance creation declined — aborting (nothing created).'));
-    process.exit(1);
+  // No re-confirmation when the create step already succeeded in a prior run.
+  if (!isStepDone(`Create instance ${INSTANCE}`)) {
+    const confirmCreate = await confirm(
+      `Create Lightsail instance "${INSTANCE}" (${bundleId}, ${blueprint}, ${cfg.availabilityZone})? This starts billing.`,
+      true,
+    );
+    if (!confirmCreate) {
+      console.log(pc.red('Instance creation declined — aborting (nothing created).'));
+      process.exit(1);
+    }
   }
   await runStep(
     `Create instance ${INSTANCE}`,
     () =>
-      aws([
-        'lightsail',
-        'create-instances',
-        '--instance-names',
-        INSTANCE,
-        '--availability-zone',
-        cfg.availabilityZone,
-        '--blueprint-id',
-        blueprint,
-        '--bundle-id',
-        bundleId,
-      ]),
+      tolerateExists(
+        () =>
+          aws([
+            'lightsail',
+            'create-instances',
+            '--instance-names',
+            INSTANCE,
+            '--availability-zone',
+            cfg.availabilityZone,
+            '--blueprint-id',
+            blueprint,
+            '--bundle-id',
+            bundleId,
+          ]),
+        `Instance ${INSTANCE}`,
+      ),
     { manual: `aws lightsail create-instances --instance-names ${INSTANCE} --availability-zone ${cfg.availabilityZone} --blueprint-id ${blueprint} --bundle-id ${bundleId} --profile ${PROFILE}`, docs: DOCS },
   );
 
@@ -294,12 +339,16 @@ export async function deployAws(cfg) {
     );
   }
 
-  let ip = DRY_IP;
+  let ip = getArtifact('staticIp') ?? DRY_IP;
   await runStep('Allocate + attach static IP', () => {
     aws(['lightsail', 'allocate-static-ip', '--static-ip-name', STATIC_IP], { allowFail: true }); // may exist
-    aws(['lightsail', 'attach-static-ip', '--static-ip-name', STATIC_IP, '--instance-name', INSTANCE]);
+    tolerateExists(
+      () => aws(['lightsail', 'attach-static-ip', '--static-ip-name', STATIC_IP, '--instance-name', INSTANCE]),
+      `Static IP attachment`,
+    );
     const out = aws(['lightsail', 'get-static-ip', '--static-ip-name', STATIC_IP, '--query', 'staticIp.ipAddress']);
     if (out) ip = JSON.parse(out);
+    setArtifact('staticIp', ip);
   }, { manual: `aws lightsail allocate-static-ip --static-ip-name ${STATIC_IP} --profile ${PROFILE}` });
 
   console.log('');
@@ -317,6 +366,8 @@ export async function deployAws(cfg) {
   } else {
     const verify = await confirm('Verify DNS propagation now (12 tries × 10 s)?', true);
     if (verify) {
+      // alwaysRun: DNS must be re-verified on every launch — records may
+      // have changed or expired between runs.
       await runStep('Resolve both hostnames to the server IP', async () => {
         for (let i = 1; i <= 12; i++) {
           try {
@@ -329,7 +380,7 @@ export async function deployAws(cfg) {
             await new Promise((r) => setTimeout(r, 10_000));
           }
         }
-      });
+      }, { alwaysRun: true });
     } else {
       skipStep('DNS propagation check', 'skipped — certbot WILL fail until both records resolve');
     }
@@ -356,12 +407,16 @@ export async function deployAws(cfg) {
       fs.writeFileSync(pemPath, pem, { mode: 0o600 });
     }, { manual: `aws lightsail create-key-pair --key-pair-name ${KEY_NAME} --profile ${PROFILE}` });
   }
+  setArtifact('pemPath', pemPath);
   warn(`Note: instances launched via CLI use the REGION's default key unless a key pair is specified;`);
   console.log(pc.dim(`    if ssh with ${pemPath} is refused, fetch the default key: aws lightsail download-default-key-pair --profile ${PROFILE}`));
 
   /* -------- provision -------- */
   section('Server provisioning (docs/DEPLOYMENT.md §2b over SSH)');
-  cfg.pgPassword = crypto.randomBytes(12).toString('hex');
+  // The generated Postgres password MUST be stable across resumes — the DB
+  // user is created once, and .env must keep matching it.
+  cfg.pgPassword = getArtifact('pgPassword') ?? crypto.randomBytes(12).toString('hex');
+  setArtifact('pgPassword', cfg.pgPassword);
   const script = buildProvisionScript(cfg);
   if (isDryRun()) {
     console.log(pc.yellow('  [dry-run] generated provisioning script:\n'));
@@ -409,7 +464,7 @@ export async function deployAws(cfg) {
         await new Promise((r) => setTimeout(r, 5000));
       }
     }
-  }, { manual: `curl -s ${cfg.apiUrl}/api/v1/health` });
+  }, { manual: `curl -s ${cfg.apiUrl}/api/v1/health`, alwaysRun: true });
 
   return { target: 'lightsail', ip, pemPath, s3, pgPassword: cfg.pgPassword };
 }

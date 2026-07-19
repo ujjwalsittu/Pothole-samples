@@ -5,6 +5,7 @@
  */
 import pc from 'picocolors';
 import { run, which } from './exec.mjs';
+import { getArtifact, setArtifact } from './state.mjs';
 import { isDryRun, note, runStep, section, select, skipStep, warn } from './ui.mjs';
 
 const DOCS = 'docs/DEPLOYMENT.md §1–2';
@@ -19,24 +20,35 @@ export async function deployRailway(cfg) {
   }
 
   section('Railway — authentication (fresh login)');
+  // alwaysRun: authentication must be refreshed on every launch.
   await runStep(
     'Log out any existing Railway session',
     () => run('railway', ['logout'], { allowFail: true }),
-    { manual: 'railway logout', docs: DOCS },
+    { manual: 'railway logout', docs: DOCS, alwaysRun: true },
   );
   await runStep('Log in to Railway (browser opens)', () => run('railway', ['login']), {
     manual: 'railway login',
     docs: DOCS,
+    alwaysRun: true,
   });
 
   section('Railway — project');
-  const mode = await select('Project', [
-    { title: 'Create a new Railway project (railway init)', value: 'init' },
-    { title: 'Link an existing project (railway link)', value: 'link' },
-  ]);
+  let mode = getArtifact('railwayMode');
+  if (mode) {
+    note(`Reusing project mode from previous run: railway ${mode}`);
+  } else {
+    mode = await select('Project', [
+      { title: 'Create a new Railway project (railway init)', value: 'init' },
+      { title: 'Link an existing project (railway link)', value: 'link' },
+    ]);
+    setArtifact('railwayMode', mode);
+  }
   await runStep(
     mode === 'init' ? 'Create project (railway init)' : 'Link project (railway link)',
-    () => run('railway', [mode]),
+    () => {
+      run('railway', [mode]);
+      setArtifact('railwayLinked', true);
+    },
     { manual: `railway ${mode}`, docs: DOCS },
   );
 

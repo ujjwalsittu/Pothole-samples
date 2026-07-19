@@ -15,18 +15,43 @@ import { deployAws } from './lib/aws.mjs';
 import { collectAwsBasics, collectCommon, collectRailwayStorage } from './lib/collect.mjs';
 import { deployRailway } from './lib/railway.mjs';
 import { which } from './lib/exec.mjs';
-import { banner, note, section, select, setDryRun, warn } from './lib/ui.mjs';
+import {
+  clearState,
+  loadState,
+  maskedState,
+  saveState,
+  stateFilePath,
+} from './lib/state.mjs';
+import { banner, confirm, isDryRun, note, section, select, setDryRun, warn } from './lib/ui.mjs';
 
 const args = process.argv.slice(2);
 if (args.includes('--help') || args.includes('-h')) {
-  console.log(`Usage: pothole-deploy [--dry-run]
+  console.log(`Usage: pothole-deploy [--dry-run] [--fresh] [--state]
 
   --dry-run   Walk the entire flow (all prompts) but print every external
-              command instead of executing it. Nothing is created.
+              command instead of executing it. Nothing is created. Uses a
+              separate state file (.deploy-state.dryrun.json).
+  --fresh     Discard any saved deployment state and start over (no prompt).
+  --state     Print the saved deployment state (secrets masked) and exit.
 `);
   process.exit(0);
 }
 setDryRun(args.includes('--dry-run'));
+
+if (args.includes('--state')) {
+  const s = loadState();
+  if (!s) {
+    console.log(`No saved state at ${stateFilePath()}`);
+  } else {
+    console.log(pc.dim(`# ${stateFilePath()} (secrets masked)`));
+    console.log(JSON.stringify(maskedState(s), null, 2));
+  }
+  process.exit(0);
+}
+if (args.includes('--fresh')) {
+  clearState();
+  console.log(pc.yellow(`Saved state discarded (${stateFilePath()}).`));
+}
 
 if (process.env.DEPLOY_ANSWERS) {
   try {
@@ -63,11 +88,44 @@ for (const [bin, hint] of BINARIES) {
 }
 note('aws is needed for the Lightsail path, railway for the Railway path only.');
 
+/* --------------------------- resume / fresh ------------------------------ */
+let target;
+let cfg;
+let resumed = false;
+const existing = loadState();
+if (existing?.target) {
+  section('Previous deployment found');
+  console.log(`    Target:     ${pc.bold(existing.target)}
+    Domains:    ${existing.answers?.apiDomain ?? '?'} / ${existing.answers?.adminDomain ?? '?'}
+    Progress:   ${existing.completedSteps?.length ?? 0} step(s) completed
+    Last touch: ${existing.updatedAt}`);
+  const action = await select('What do you want to do?', [
+    { title: 'Resume — skip answered questions and completed steps', value: 'resume' },
+    { title: 'Start fresh — delete the saved state and begin again', value: 'fresh' },
+    { title: 'Quit', value: 'quit' },
+  ]);
+  if (action === 'quit') process.exit(0);
+  if (action === 'fresh') {
+    const sure = await confirm('Delete the saved state (incl. stored secrets)?', false);
+    if (!sure) process.exit(0);
+    clearState();
+    note('State deleted — starting over.');
+  } else {
+    target = existing.target;
+    cfg = { ...existing.answers };
+    resumed = true;
+    console.log(pc.dim(`    Reusing answers: base=${cfg.baseDomain}, api=${cfg.apiDomain}, admin=${cfg.adminDomain},`));
+    console.log(pc.dim(`      auth0=${cfg.auth0Domain}, audience=${cfg.auth0Audience}, admin-email=${cfg.adminEmail}`));
+  }
+}
+
 /* -------------------------------- target -------------------------------- */
-const target = await select('Where do you want to deploy?', [
-  { title: 'Railway — managed, minutes to set up, S3 storage required', value: 'railway' },
-  { title: 'AWS Lightsail — one Ubuntu VM, persistent disk, in-panel OSRM', value: 'lightsail' },
-]);
+if (!resumed) {
+  target = await select('Where do you want to deploy?', [
+    { title: 'Railway — managed, minutes to set up, S3 storage required', value: 'railway' },
+    { title: 'AWS Lightsail — one Ubuntu VM, persistent disk, in-panel OSRM', value: 'lightsail' },
+  ]);
+}
 
 const missingTargetBin =
   (target === 'railway' && !available.railway && 'railway CLI missing — install it first: brew install railway  (or npm i -g @railway/cli)') ||
@@ -79,13 +137,18 @@ if (missingTargetBin) {
 }
 
 /* -------------------------------- collect ------------------------------- */
-const cfg = await collectCommon();
+if (!resumed) {
+  cfg = await collectCommon();
+  if (target === 'railway') Object.assign(cfg, await collectRailwayStorage());
+  else Object.assign(cfg, await collectAwsBasics());
+  // Persist immediately: a crash right after the questionnaire is resumable.
+  saveState({ target, answers: cfg });
+}
+
 let result;
 if (target === 'railway') {
-  Object.assign(cfg, await collectRailwayStorage());
   result = await deployRailway(cfg);
 } else {
-  Object.assign(cfg, await collectAwsBasics());
   result = await deployAws(cfg);
 }
 
@@ -137,4 +200,17 @@ ${pc.dim(`       "extra": {
   ${pc.yellow('5.')} Resend: verify your sending domain (${cfg.mailFrom.replace(/^.*<|>.*$/g, '')})
      or signup/settlement mails will not deliver.
 `);
+/* ----------------------------- state cleanup ----------------------------- */
+if (isDryRun()) {
+  note(`[dry-run] state kept at ${stateFilePath()} — re-run to test resume, or use --fresh.`);
+} else {
+  const keep = await confirm('Keep the deploy state file for reference? (it contains secrets)', false);
+  if (keep) {
+    warn(`State kept at ${stateFilePath()} — mode 600, git-ignored. Delete it when done.`);
+  } else {
+    clearState();
+    console.log(pc.green('  state cleared'));
+  }
+}
+
 console.log(pc.green(pc.bold('  Done. Happy pothole hunting!\n')));

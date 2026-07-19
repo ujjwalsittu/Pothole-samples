@@ -1,6 +1,7 @@
 /** Prompt helpers, step runner and banners for the PotholeCollect deployer. */
 import prompts from 'prompts';
 import pc from 'picocolors';
+import { isStepDone, markStepDone } from './state.mjs';
 
 let DRY = false;
 export const setDryRun = (v) => {
@@ -15,11 +16,16 @@ const onCancel = () => {
 
 /* ------------------------------- prompts -------------------------------- */
 
+const cancelledIf = (cond) => {
+  if (cond) onCancel();
+};
+
 export async function text(message, { initial, validate } = {}) {
   const { v } = await prompts(
     { type: 'text', name: 'v', message, initial, validate },
     { onCancel },
   );
+  cancelledIf(v === undefined);
   return typeof v === 'string' ? v.trim() : v;
 }
 
@@ -46,6 +52,10 @@ export async function select(message, choices, initialIndex = 0) {
     { type: 'select', name: 'v', message, choices, initial: initialIndex },
     { onCancel },
   );
+  // Non-TTY stdin can auto-submit the raw initial index instead of a choice
+  // value — treat anything that is not a real choice value as a cancel, so
+  // EOF never silently picks a target or writes bogus state.
+  cancelledIf(!choices.some((c) => c.value === v));
   return v;
 }
 
@@ -107,12 +117,22 @@ export function highlightBlock(lines) {
  * Run one deployment step. Prints ✔ on success, ✖ on failure — and on
  * failure shows the exact manual command + doc pointer, then asks
  * continue/abort (dry-run always continues). Never crashes the flow.
+ *
+ * RESUME: step labels are a stable contract. A label already recorded in the
+ * state file is skipped (↷) and treated as done — unless `alwaysRun` is set
+ * (auth refreshes, DNS waits, health checks). Successful steps are persisted
+ * immediately, so an abort/crash resumes from the first incomplete step.
  */
-export async function runStep(label, fn, { manual, docs, optional = false } = {}) {
+export async function runStep(label, fn, { manual, docs, optional = false, alwaysRun = false } = {}) {
+  if (!alwaysRun && isStepDone(label)) {
+    console.log(`  ${pc.yellow('↷')} ${label} ${pc.dim('(done in previous run)')}`);
+    return { ok: true, cached: true };
+  }
   process.stdout.write(pc.dim(`  … ${label}\n`));
   try {
     const value = await fn();
     console.log(`  ${pc.green('✔')} ${label}`);
+    if (!alwaysRun) markStepDone(label);
     return { ok: true, value };
   } catch (err) {
     console.log(`  ${pc.red('✖')} ${label}`);

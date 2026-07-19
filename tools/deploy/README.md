@@ -58,6 +58,36 @@ npm run deploy -- --dry-run   # rehearse: prints every command, executes nothing
    callback URLs (SPA + native), primary-admin first login, a ready-to-paste
    mobile `app.json` extra block, Resend domain verification.
 
+## State & resume
+
+Every answered question, completed step and computed value (bucket name,
+IAM access key, static IP, generated Postgres password, …) is persisted to
+`<repo-root>/.deploy-state.json` **immediately** — so a crash, an aborted
+step, or a `Ctrl-C` is always resumable:
+
+- On the next launch the CLI shows what it found (target, domains, progress)
+  and offers **Resume | Start fresh | Quit**. Resume skips the questionnaire
+  and every completed step (`↷ … (done in previous run)`), and reuses
+  computed artifacts instead of regenerating them (critical for the IAM
+  secret key, which AWS only reveals once, and the random bucket suffix).
+- Steps that must re-run every time (Railway login refresh, DNS wait +
+  propagation check, credential validation, the final HTTPS health check)
+  are marked `alwaysRun` and never skipped.
+- Cloud-side re-runs are idempotent: "already exists / already attached"
+  responses are treated as success with a note.
+- **Security**: the state file contains secrets (AWS keys, Resend key,
+  generated DB password). It is written with mode `600` and git-ignored;
+  after the final summary the CLI offers to delete it (default: delete).
+- Dry-runs use a separate `.deploy-state.dryrun.json` so rehearsals never
+  touch real state.
+
+Flags:
+
+```bash
+npm run deploy -- --state   # print saved state (secrets masked) and exit
+npm run deploy -- --fresh   # discard saved state and start over, no prompt
+```
+
 ## Costs
 
 The Lightsail path **starts billing immediately**: instance ($7–44/mo per
