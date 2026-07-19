@@ -27,6 +27,7 @@ export type SampleState =
   | 'auto_rejected'    // failed automatic validation (speed, duration, dedup, mock GPS)
   | 'pending_review'   // waiting for an admin
   | 'accepted'
+  | 'partially_accepted' // admin accepted the sample but only a subset of its annotations
   | 'rejected';        // rejected by admin — cannot be re-uploaded, a NEW sample is required
 
 export interface GpsPoint {
@@ -50,10 +51,16 @@ export interface PolygonPoint {
   y: number;
 }
 
+/** Per-annotation review status (admins can accept/reject individual annotations). */
+export type AnnotationStatus = 'pending' | 'accepted' | 'rejected';
+export type AnnotationAuthor = 'collector' | 'admin';
+
 export interface Annotation {
   id: string;
   sampleId: string;
   label: string;
+  status: AnnotationStatus;
+  createdBy: AnnotationAuthor;
   polygon: PolygonPoint[];
   /**
    * For video samples: the video timeline position (seconds) this annotation
@@ -146,6 +153,8 @@ export interface Settlement {
 export interface DashboardStats {
   totalSamples: number;
   accepted: number;
+  /** Accepted with only a subset of annotations — still counts toward the quota. */
+  partiallyAccepted: number;
   rejected: number;
   pending: number;
   photosAccepted: number;

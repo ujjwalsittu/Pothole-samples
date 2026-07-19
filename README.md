@@ -28,19 +28,27 @@ videos) from field collectors, with admin review, earnings, and settlements.
    track so every annotated pothole's coordinates can be interpolated from the
    video timeline — media files are **never watermarked and metadata is never
    altered**; coordinates live in sidecar JSON.
-4. **Rules** — videos: ≥ 40 s, ≥ 2 marked potholes, vehicle speed held near
-   60 km/h (server validates a 60–65 km/h window; the in-app speedometer is
-   capped at 60). Focus on the road — trees, buildings, vehicles, people,
-   animals, signboards get samples rejected.
-5. **Review** — admins accept/reject in the web dashboard (photo overlays, video
-   player synced to the GPS path). A rejected sample can never be re-uploaded —
-   the collector must capture a new one.
+4. **Rules** — videos: ≥ 40 s, ≥ 2 marked potholes, up to 1 GB, vehicle speed
+   at most 60 km/h as shown to the user (the server tolerates up to 65 km/h;
+   no minimum speed; the in-app speedometer never displays above 60). Focus on
+   the road — trees, buildings, vehicles, people, animals, signboards get
+   samples rejected.
+5. **Review** — admins review in the web dashboard (photo overlays, video
+   player synced to the GPS path), can edit/create/delete annotations and
+   accept/reject them individually, then fully accept, **partially accept**
+   (approved annotations only reach training data; collector still gets full
+   credit), or reject. A rejected sample can never be re-uploaded — the
+   collector must capture a new one.
 6. **Earnings** — each accepted sample credits payout/quota to a running ledger.
    Admins settle manually (UPI), uploading payment proof; settlement marks all
    earnings up to that point as settled.
-7. **Export** — accepted samples download as bifurcated ZIPs
-   (`photos/<id>/`, `videos/<id>/` with media + annotations + GPS track +
-   training-ready metadata), or push straight to Google Drive.
+7. **Export** — two purpose-built bundles, downloadable or pushed to Google
+   Drive: a **training bundle** (accepted + partially-accepted media with
+   approved annotations in COCO/YOLO formats — no GPS data, GPS is not used
+   for model training) and a **raw testing bundle** (untouched media + full
+   raw GPS tracks, for real-world detection testing). Raw footage and raw GPS
+   are never deleted. Media is stored on local disk or **S3**
+   (`STORAGE_DRIVER=s3`).
 8. **Offline** — captures queue locally (SQLite + filesystem) and upload in
    1 MB resumable chunks whenever connectivity returns.
 9. **Mail** — Resend powers notifications: signup received, account approved,
@@ -70,6 +78,11 @@ npx expo prebuild && npx expo run:android   # react-native-auth0 needs a dev bui
 
 Each app's README covers its own setup in detail, including the Auth0 tenant
 configuration (Google social connection, native + SPA apps, API audience).
+
+**Read `docs/GUIDE.md` for the complete how-to** — collector walkthrough,
+admin review/annotation workflow, settlements, exports, and a full explanation
+of how GPS tracks are synchronized with the video timeline so pothole
+coordinates are always recoverable.
 
 ## Versioning
 
