@@ -8,6 +8,7 @@ import {
   configureForegroundNotifications,
   registerForPushNotifications,
 } from '@/push/register';
+import { checkForModelUpdate } from '@/detection/model-updater';
 import { colors, font } from '@/theme';
 
 export default function TabsLayout() {
@@ -25,7 +26,16 @@ export default function TabsLayout() {
       const message = [title, body].filter(Boolean).join(' — ');
       if (message) toast.show(message, 'info');
     });
-    return () => sub.remove();
+    // OTA detection-model check: fire-and-forget shortly after the tabs mount.
+    const modelTimer = setTimeout(() => {
+      void checkForModelUpdate().then((result) => {
+        if (result) toast.show(`Road-detection model v${result.version} installed`, 'success');
+      });
+    }, 3000);
+    return () => {
+      sub.remove();
+      clearTimeout(modelTimer);
+    };
   }, [toast]);
 
   return (

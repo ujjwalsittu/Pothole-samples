@@ -18,9 +18,10 @@
  */
 import * as FileSystem from 'expo-file-system';
 import { HeuristicAdvisor } from './heuristic';
+import { TFLITE_MODEL_PATH } from './paths';
 import type { AdvisorFrame, AdvisorResult, FrameAdvisor } from './types';
 
-export const TFLITE_MODEL_PATH = `${FileSystem.documentDirectory ?? ''}models/road-detector.tflite`;
+export { TFLITE_MODEL_PATH } from './paths';
 
 const ROAD_THRESHOLD = 0.5;
 const POTHOLE_THRESHOLD = 0.6;

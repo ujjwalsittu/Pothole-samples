@@ -73,6 +73,22 @@ export function registerPushToken(token: string, platform: string): Promise<{ ok
   });
 }
 
+// ---------- OTA detection model ----------
+
+/** GET /models/latest — 404 with code NO_MODEL when nothing is published. */
+export interface LatestModelInfo {
+  version: number;
+  sha256: string;
+  sizeBytes: number;
+  notes: string | null;
+  /** Server path of the binary stream (auth required). */
+  url: string;
+}
+
+export function getLatestModel(): Promise<LatestModelInfo> {
+  return api<LatestModelInfo>('/models/latest');
+}
+
 // ---------- dashboard / samples / earnings ----------
 
 export function getDashboardStats(): Promise<DashboardStats> {

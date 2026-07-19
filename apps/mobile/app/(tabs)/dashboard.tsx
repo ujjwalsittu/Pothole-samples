@@ -15,7 +15,9 @@ import {
   type StreakInfo,
 } from '@/api/endpoints';
 import { useAuth } from '@/auth/AuthContext';
+import { useToast } from '@/components/Toast';
 import { useCountUp } from '@/hooks/useCountUp';
+import { checkForModelUpdate } from '@/detection/model-updater';
 import { uploadManager } from '@/upload/manager';
 import { activeWindow, formatDistance, withGeo, type CampaignWithGeo } from '@/utils/campaigns';
 import { colors, font, radius, spacing } from '@/theme';
@@ -24,6 +26,7 @@ import { DEFAULT_PACKAGE, type DashboardStats } from '@/shared';
 export default function DashboardScreen() {
   const router = useRouter();
   const { profile } = useAuth();
+  const toast = useToast();
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [streak, setStreak] = useState<StreakInfo | null>(null);
   const [campaigns, setCampaigns] = useState<CampaignWithGeo[]>([]);
@@ -65,6 +68,10 @@ export default function DashboardScreen() {
 
   const onRefresh = async () => {
     setRefreshing(true);
+    // Manual refresh also re-checks for an OTA detection-model update.
+    void checkForModelUpdate().then((result) => {
+      if (result) toast.show(`Road-detection model v${result.version} installed`, 'success');
+    });
     await load();
     setRefreshing(false);
   };

@@ -17,3 +17,12 @@ export async function createFrameAdvisor(): Promise<FrameAdvisor> {
   cached = (await TfliteAdvisor.create()) ?? new HeuristicAdvisor();
   return cached;
 }
+
+/**
+ * Invalidates the cached advisor (e.g. after an OTA model update) so the next
+ * capture-screen mount reloads it — picking up a freshly installed model.
+ */
+export function resetFrameAdvisor(): void {
+  cached?.dispose();
+  cached = null;
+}

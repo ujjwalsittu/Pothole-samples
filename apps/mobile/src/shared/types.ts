@@ -98,7 +98,12 @@ export interface Sample {
   userId: string;
   mediaType: MediaType;
   state: SampleState;
-  /** SHA-256 of the exact media file bytes (integrity + exact-dup detection). */
+  /**
+   * Content hash for integrity + exact-dup detection. NOT a raw-byte sha256:
+   * clients hash the base64 representation (per-4MB composite for large
+   * files) because expo-crypto cannot stream — see apps/mobile/src/upload/
+   * hash.ts and contentHashOfFile in apps/api/src/services/storage.ts.
+   */
   sha256: string;
   /** 64-bit perceptual hash, hex (photos; keyframes for videos). */
   phash: string | null;
@@ -249,6 +254,37 @@ export interface AuditLogEntry {
 }
 
 export type SettlementConfirmState = 'awaiting_confirmation' | 'confirmed' | 'cancelled';
+
+/** Training-data export formats. PyTorch consumers use the COCO output. */
+export type ExportFormat = 'coco' | 'yolo' | 'voc';
+
+/** A published on-device TFLite model release (OTA-distributed to the app). */
+export interface ModelRelease {
+  id: string;
+  version: number;
+  filename: string;
+  sha256: string;
+  sizeBytes: number;
+  notes: string | null;
+  active: boolean;
+  uploadedBy: string;
+  createdAt: string;
+}
+
+/** OSRM manager status (admin services panel). */
+export interface OsrmStatus {
+  /** Effective OSRM endpoint used for map-matching, if any. */
+  effectiveUrl: string | null;
+  /** True when OSRM_URL env points at an externally managed server. */
+  external: boolean;
+  dataDownloaded: boolean;
+  preprocessed: boolean;
+  download: { inProgress: boolean; receivedBytes: number; totalBytes: number | null; url: string | null; error: string | null };
+  preprocess: { inProgress: boolean; stage: string | null; error: string | null };
+  serve: { running: boolean; pid: number | null; startedAt: string | null; error: string | null };
+  /** How preprocessing/serving would run on this host. */
+  runner: 'binaries' | 'docker' | 'unavailable';
+}
 
 /** Standard API envelope. */
 export interface ApiOk<T> { ok: true; data: T; }

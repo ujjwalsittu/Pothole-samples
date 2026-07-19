@@ -96,6 +96,32 @@ A pluggable `FrameAdvisor` interface guides collectors while capturing
      heuristic silently. Wiring a camera frame processor is the single drop-in
      point left (`AdvisorFrame.frameData`).
 
+### OTA model delivery
+
+The detection model ships to installed apps **without a rebuild**:
+
+1. An admin uploads/publishes a `.tflite` in the web dashboard; the API then
+   serves `GET /models/latest` (`{version, sha256, sizeBytes, notes, url}`,
+   `404 NO_MODEL` when none is published) and streams the binary from
+   `GET /models/latest/file` (Bearer auth).
+2. On each launch (shortly after the tab bar mounts, same spot as push
+   registration) and on every manual dashboard pull-to-refresh, the app runs
+   `checkForModelUpdate()` (`src/detection/model-updater.ts`): it compares the
+   server version against `models/model-meta.json`, downloads a newer model to
+   `road-detector.tflite.tmp` with the auth header, verifies size + sha256
+   (same base64/composite scheme as uploads), atomically renames it over
+   `models/road-detector.tflite` and records the meta. A snackbar confirms
+   "Road-detection model v<version> installed" and the advisor singleton is
+   invalidated so the next capture screen loads the new model.
+3. All failure modes (no published model, offline, checksum mismatch) are
+   silent no-ops — the previous model (or the heuristic) keeps working.
+4. **The TFLite runtime still requires the optional native module**
+   (`react-native-fast-tflite` + dev build). Without it the downloaded model
+   sits dormant on disk and the sensor-based heuristic advisor continues; the
+   Profile screen's Help card shows which state you are in
+   ("Detection model: v<version> (active)" vs "not installed — using sensor
+   guidance").
+
 ## Feature walkthrough
 
 - **Splash → routing** (`app/index.tsx`): animated logo + "Powered by

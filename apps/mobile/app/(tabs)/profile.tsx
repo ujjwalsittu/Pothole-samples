@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Image, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
@@ -9,6 +9,7 @@ import { useAuth } from '@/auth/AuthContext';
 import { patchMe } from '@/api/endpoints';
 import { ApiError } from '@/api/client';
 import { resetWalkthrough } from '@/onboarding/flags';
+import { getInstalledModelMeta, type InstalledModelMeta } from '@/detection/model-updater';
 import { colors, font, radius, spacing } from '@/theme';
 import { DEFAULT_PACKAGE } from '@/shared';
 
@@ -25,6 +26,17 @@ export default function ProfileScreen() {
   const [photoBase64, setPhotoBase64] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [modelMeta, setModelMeta] = useState<InstalledModelMeta | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    void getInstalledModelMeta().then((meta) => {
+      if (mounted) setModelMeta(meta);
+    });
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   const pickPhoto = async () => {
     const res = await ImagePicker.launchImageLibraryAsync({
@@ -171,6 +183,12 @@ export default function ProfileScreen() {
             void resetWalkthrough().finally(() => router.push('/walkthrough'));
           }}
         />
+        <Text style={styles.modelRow}>
+          Detection model:{' '}
+          {modelMeta
+            ? `v${modelMeta.version} (active)`
+            : 'not installed — using sensor guidance'}
+        </Text>
       </View>
 
       <Button
@@ -249,5 +267,6 @@ const styles = StyleSheet.create({
   error: { color: colors.danger, fontSize: font.small, marginTop: spacing.sm },
   pkgText: { color: colors.textDim, fontSize: font.small, lineHeight: 20 },
   pkgNext: { color: colors.textFaint, fontSize: font.tiny, marginTop: spacing.xs },
+  modelRow: { color: colors.textFaint, fontSize: font.tiny, marginTop: spacing.sm },
   logout: { marginTop: spacing.sm },
 });
