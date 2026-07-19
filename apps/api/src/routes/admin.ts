@@ -11,6 +11,7 @@ import {
   geohashDecode,
   geohashEncode,
   type DatasetManifest,
+  type ExportFormat,
   type GpsPoint,
   type MediaType,
   type RoadQualityCell,
@@ -22,11 +23,11 @@ import {
   rowToAnnotation,
   rowToAuditEntry,
   rowToCampaign,
+  rowToModelRelease,
   rowToPackage,
   rowToSample,
   rowToSettlement,
   rowToUser,
-  type SettlementOut,
 } from '../db/mappers';
 import { ApiError, asyncH, ok } from '../http';
 import { requireRole } from '../middleware/auth';
@@ -36,13 +37,26 @@ import { mail } from '../services/mail';
 import { sendPush } from '../services/push';
 import { extractAcceptedFrames } from '../services/frames';
 import {
+  ALL_EXPORT_FORMATS,
   buildBundle,
   buildRawBundle,
   buildTrainingBundle,
   type BundleFile,
 } from '../services/exporter';
 import { driveConfigured, exportBundleToDrive } from '../services/drive';
-import { extForMime, openMediaStream, saveBuffer } from '../services/storage';
+import {
+  GEOFABRIK_HINT,
+  detectRunner,
+  effectiveOsrmUrl,
+  isBusy,
+  osrmStatus,
+  startDownload,
+  startPreprocess,
+  startServe,
+  stopServe,
+} from '../services/osrm-manager';
+import { modelRelPath } from './models';
+import { contentHashOfBuffer, extForMime, openMediaStream, saveBuffer } from '../services/storage';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -1100,8 +1114,13 @@ interface OsrmMatchResponse {
 adminRouter.post(
   '/postprocess/map-match',
   asyncH(async (req, res) => {
-    if (!config.osrmUrl) {
-      throw new ApiError(501, 'NOT_CONFIGURED', 'Set OSRM_URL to enable map-matching');
+    const osrmUrl = effectiveOsrmUrl();
+    if (!osrmUrl) {
+      throw new ApiError(
+        501,
+        'NOT_CONFIGURED',
+        'No OSRM server available — start the managed instance (POST /admin/osrm/serve) or set OSRM_URL',
+      );
     }
     const body = z
       .object({ sampleIds: z.array(z.string().regex(UUID_RE)).min(1).optional() })
@@ -1135,7 +1154,7 @@ adminRouter.post(
 
         const coords = sampled.map((p) => `${p.lng},${p.lat}`).join(';');
         const timestamps = sampled.map((p) => Math.round(p.t / 1000)).join(';');
-        const url = `${config.osrmUrl.replace(/\/$/, '')}/match/v1/driving/${coords}?timestamps=${timestamps}&geometries=geojson&overview=false`;
+        const url = `${osrmUrl.replace(/\/$/, '')}/match/v1/driving/${coords}?timestamps=${timestamps}&geometries=geojson&overview=false`;
         const resp = await fetch(url);
         if (!resp.ok) {
           results.push({ sampleId, corrected: 0, error: `OSRM ${resp.status}` });
@@ -1193,6 +1212,160 @@ adminRouter.post(
       corrected: results.reduce((n, r) => n + r.corrected, 0),
     });
     ok(res, { results });
+  }),
+);
+
+/* ----------------------------- OSRM manager ----------------------------- */
+
+adminRouter.get(
+  '/osrm/status',
+  asyncH(async (_req, res) => {
+    ok(res, await osrmStatus());
+  }),
+);
+
+adminRouter.post(
+  '/osrm/download',
+  asyncH(async (req, res) => {
+    const body = z.object({ url: z.string().url() }).parse(req.body ?? {});
+    if (!body.url.startsWith('https://')) {
+      throw new ApiError(400, 'HTTPS_REQUIRED', `Map downloads must use https. ${GEOFABRIK_HINT}`);
+    }
+    if (isBusy()) {
+      throw new ApiError(409, 'OSRM_BUSY', 'A download or preprocess is already running');
+    }
+    startDownload(body.url);
+    void audit(req.user!.id, 'osrm.download', 'osrm', body.url);
+    ok(res, await osrmStatus(), 202);
+  }),
+);
+
+adminRouter.post(
+  '/osrm/preprocess',
+  asyncH(async (req, res) => {
+    if (isBusy()) {
+      throw new ApiError(409, 'OSRM_BUSY', 'A download or preprocess is already running');
+    }
+    const runner = await detectRunner();
+    if (runner === 'unavailable') {
+      throw new ApiError(
+        501,
+        'OSRM_RUNNER_UNAVAILABLE',
+        'Neither OSRM binaries (osrm-extract/osrm-routed) nor docker are available on this host. Install osrm-backend or docker, or point OSRM_URL at an external server.',
+      );
+    }
+    const status = await osrmStatus();
+    if (!status.dataDownloaded) {
+      throw new ApiError(409, 'NO_MAP_DATA', `Download a map first (POST /admin/osrm/download). ${GEOFABRIK_HINT}`);
+    }
+    startPreprocess(runner);
+    void audit(req.user!.id, 'osrm.preprocess', 'osrm', 'map.osm.pbf', { runner });
+    ok(res, await osrmStatus(), 202);
+  }),
+);
+
+adminRouter.post(
+  '/osrm/serve',
+  asyncH(async (req, res) => {
+    const runner = await detectRunner();
+    if (runner === 'unavailable') {
+      throw new ApiError(
+        501,
+        'OSRM_RUNNER_UNAVAILABLE',
+        'Neither OSRM binaries nor docker are available on this host. Install osrm-backend or docker, or point OSRM_URL at an external server.',
+      );
+    }
+    const status = await osrmStatus();
+    if (!status.preprocessed) {
+      throw new ApiError(409, 'NOT_PREPROCESSED', 'Run POST /admin/osrm/preprocess first');
+    }
+    await startServe(runner);
+    void audit(req.user!.id, 'osrm.serve', 'osrm', 'osrm-routed', { runner });
+    ok(res, await osrmStatus(), 202);
+  }),
+);
+
+adminRouter.post(
+  '/osrm/stop',
+  asyncH(async (req, res) => {
+    await stopServe();
+    void audit(req.user!.id, 'osrm.stop', 'osrm', 'osrm-routed');
+    ok(res, await osrmStatus());
+  }),
+);
+
+/* ----------------------------- model releases --------------------------- */
+
+const modelUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 200 * 1024 * 1024 } });
+
+/**
+ * POST /admin/models — upload a .tflite release. The new release becomes the
+ * single active one; sha256 is computed server-side.
+ */
+adminRouter.post(
+  '/models',
+  modelUpload.single('file'),
+  asyncH(async (req, res) => {
+    const admin = req.user!;
+    const body = z.object({ notes: z.string().trim().optional() }).parse(req.body ?? {});
+    const file = req.file;
+    if (!file) throw new ApiError(400, 'FILE_REQUIRED', 'Attach the model as multipart field "file"');
+    if (!file.originalname.toLowerCase().endsWith('.tflite')) {
+      throw new ApiError(400, 'INVALID_MODEL_FILE', 'Model releases must be .tflite files');
+    }
+    // Must use the platform content-hash scheme — the mobile OTA updater
+    // verifies its download against this value with the same algorithm.
+    const sha256 = contentHashOfBuffer(file.buffer);
+
+    const release = await withTransaction(async (client) => {
+      await client.query('LOCK TABLE model_releases IN SHARE ROW EXCLUSIVE MODE');
+      const v = await client.query<{ next: string }>(
+        'SELECT COALESCE(MAX(version), 0) + 1 AS next FROM model_releases',
+      );
+      const version = Number(v.rows[0].next);
+      await saveBuffer(modelRelPath(version), file.buffer);
+      await client.query('UPDATE model_releases SET active = false WHERE active = true');
+      const ins = await client.query(
+        `INSERT INTO model_releases (version, filename, sha256, size_bytes, notes, active, uploaded_by)
+         VALUES ($1,$2,$3,$4,$5,true,$6) RETURNING *`,
+        [version, file.originalname, sha256, file.size, body.notes ?? null, admin.id],
+      );
+      return rowToModelRelease(ins.rows[0]);
+    });
+
+    void audit(admin.id, 'model.upload', 'model', release.id, {
+      version: release.version,
+      sha256: release.sha256,
+      sizeBytes: release.sizeBytes,
+    });
+    ok(res, release, 201);
+  }),
+);
+
+adminRouter.get(
+  '/models',
+  asyncH(async (_req, res) => {
+    const { rows } = await query('SELECT * FROM model_releases ORDER BY version DESC');
+    ok(res, rows.map(rowToModelRelease));
+  }),
+);
+
+/** POST /admin/models/:id/activate — make one release the single active one. */
+adminRouter.post(
+  '/models/:id/activate',
+  asyncH(async (req, res) => {
+    assertUuid(req.params.id, 'MODEL_NOT_FOUND', 'Model release');
+    const release = await withTransaction(async (client) => {
+      const found = await client.query('SELECT * FROM model_releases WHERE id = $1 FOR UPDATE', [req.params.id]);
+      if (!found.rows[0]) throw new ApiError(404, 'MODEL_NOT_FOUND', 'Model release not found');
+      await client.query('UPDATE model_releases SET active = false WHERE active = true');
+      const upd = await client.query('UPDATE model_releases SET active = true WHERE id = $1 RETURNING *', [
+        req.params.id,
+      ]);
+      return rowToModelRelease(upd.rows[0]);
+    });
+    void audit(req.user!.id, 'model.activate', 'model', release.id, { version: release.version });
+    ok(res, release);
   }),
 );
 
@@ -1260,12 +1433,22 @@ adminRouter.get(
 adminRouter.get(
   '/export/training.zip',
   asyncH(async (req, res) => {
-    const { files, manifest } = await buildTrainingBundle();
+    // ?formats=coco,yolo,voc — comma list, default all three.
+    const formatsParam =
+      typeof req.query.formats === 'string' && req.query.formats.trim() !== ''
+        ? req.query.formats.split(',').map((s) => s.trim().toLowerCase())
+        : ALL_EXPORT_FORMATS;
+    const formats = z
+      .array(z.enum(['coco', 'yolo', 'voc']))
+      .min(1)
+      .parse(formatsParam) as ExportFormat[];
+
+    const { files, manifest } = await buildTrainingBundle(formats);
     const sha256 = await streamZipBundle(res, `pothole-training-${today()}.zip`, files);
     await query(
       `INSERT INTO dataset_exports
-         (created_by, bundle_sha256, sample_count, annotation_count, label_counts, split_counts, samples)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+         (created_by, bundle_sha256, sample_count, annotation_count, label_counts, split_counts, samples, formats)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
       [
         req.user!.id,
         sha256,
@@ -1274,11 +1457,13 @@ adminRouter.get(
         JSON.stringify(manifest.labelCounts),
         JSON.stringify(manifest.splitCounts),
         JSON.stringify(manifest.samples),
+        JSON.stringify(manifest.formats),
       ],
     );
     void audit(req.user!.id, 'dataset.export', 'dataset', sha256, {
       sampleCount: manifest.sampleCount,
       splitCounts: manifest.splitCounts,
+      formats: manifest.formats,
     });
   }),
 );
@@ -1320,7 +1505,7 @@ adminRouter.post(
 /* --------------------------- dataset registry --------------------------- */
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-const rowToManifest = (r: Record<string, any>): DatasetManifest => ({
+const rowToManifest = (r: Record<string, any>): DatasetManifest & { formats: ExportFormat[] } => ({
   id: r.id,
   createdAt: new Date(r.created_at).toISOString(),
   createdBy: r.created_by ?? '',
@@ -1330,6 +1515,7 @@ const rowToManifest = (r: Record<string, any>): DatasetManifest => ({
   labelCounts: r.label_counts ?? {},
   splitCounts: r.split_counts ?? { train: 0, val: 0, test: 0 },
   samples: r.samples ?? [],
+  formats: r.formats ?? ALL_EXPORT_FORMATS,
 });
 
 /** GET /admin/datasets — training-export history with manifests. */

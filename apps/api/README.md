@@ -39,7 +39,8 @@ a logged no-op without it.
 | `STORAGE_DRIVER` | `local` (default) or `s3` |
 | `S3_BUCKET`, `S3_REGION`, `S3_ENDPOINT` | S3 driver config; `S3_ENDPOINT` enables MinIO-compatible path-style mode. Credentials via the standard AWS chain |
 | `GOOGLE_SERVICE_ACCOUNT_JSON`, `DRIVE_FOLDER_ID` | Google Drive export (endpoint returns `501 NOT_CONFIGURED` when unset) |
-| `OSRM_URL` | OSRM base URL for map-matching (`501 NOT_CONFIGURED` when unset) |
+| `OSRM_URL` | External OSRM base URL for map-matching (optional — the managed OSRM instance takes precedence when running) |
+| `OSRM_DATA_DIR`, `OSRM_PORT` | Managed OSRM working dir (default `./osrm-data`) and port (default 5001) |
 | `CORS_ORIGINS` | Comma-separated allowed origins (empty = allow all) |
 
 ### Storage drivers
@@ -105,13 +106,16 @@ Admin (`role` admin/owner; every mutation is recorded in the audit log):
 - Settlements: `GET /admin/settlements`, `GET /admin/users/:id/balance`, `POST /admin/users/:id/settlements` (multipart, capped at unsettled balance).
   **Two-admin control:** amounts ≥ ₹5000 (`SETTLEMENT_CONFIRM_THRESHOLD_INR`) are created `awaiting_confirmation` and do NOT touch the ledger until `POST /admin/settlements/:id/confirm` by a **different** admin (`403 SAME_ADMIN` otherwise); `POST /admin/settlements/:id/cancel` aborts. Smaller amounts settle immediately. On settle: negative ledger entry + earnings marked settled oldest-first + mail/push with UTR.
 - Audit: `GET /admin/audit?limit=&before=&action=` — every admin mutation with actor name.
-- Post-processing: `POST /admin/postprocess/map-match {sampleIds?}` — snaps video tracks to the road network via OSRM (`OSRM_URL`), downsampled ≤ 100 points; annotation coords recomputed on the matched geometry into `corrected_lat/lng` (`correction_source='osrm'`); originals untouched.
+- Post-processing: `POST /admin/postprocess/map-match {sampleIds?}` — snaps video tracks to the road network via OSRM (managed instance first, `OSRM_URL` fallback), downsampled ≤ 100 points; annotation coords recomputed on the matched geometry into `corrected_lat/lng` (`correction_source='osrm'`); originals untouched.
+- OSRM manager (run OSRM entirely from the hosted platform):
+  `GET /admin/osrm/status` (runner: `binaries` on PATH → `docker` → `unavailable`; download/preprocess/serve progress), `POST /admin/osrm/download {url}` (https-only .osm.pbf — use a regional Geofabrik extract; 409 while busy), `POST /admin/osrm/preprocess` (extract → partition → customize, MLD; async 202, poll status; `501 OSRM_RUNNER_UNAVAILABLE` with guidance when neither binaries nor docker exist), `POST /admin/osrm/serve` / `POST /admin/osrm/stop` (osrm-routed on `OSRM_PORT`, managed URL `http://127.0.0.1:5001`). State is in-memory — after an API restart status simply reports not-running (files on disk are still detected).
+- Model OTA: `POST /admin/models` (multipart `.tflite` + notes; server-side sha256; stored via the driver at `models/<version>.tflite`; new release auto-activates, single active), `GET /admin/models`, `POST /admin/models/:id/activate`. Collector side: `GET /models/latest` → `{version, sha256, sizeBytes, notes, url}` (404 `NO_MODEL`), `GET /models/latest/file` streams the model.
 - Road quality: `GET /admin/road-quality` — geohash-7 (~150 m) cells from accepted/partial annotations (corrected coords preferred). `severityIndex = min(100, annotations×12 + clusters×10)`.
 
 Exports:
 
 - `GET /admin/export/accepted.zip?mediaType=` — legacy raw layout, `accepted` only (back-compat).
-- `GET /admin/export/training.zip` — **training bundle**: accepted + partially_accepted, ONLY approved annotations, **zero GPS data**. Split-versioned `train/ val/ test/` (deterministic hash of collector + geohash cell — never random, no leakage across splits) with `images/`, `frames/` (extracted video frames), `videos/` + per-split COCO + YOLO labels + `classes.txt`, plus top-level `manifest.json` + bundle README. Every export records a `dataset_exports` row with the streamed zip's sha256.
+- `GET /admin/export/training.zip?formats=coco,yolo,voc` — **training bundle**: accepted + partially_accepted, ONLY approved annotations, **zero GPS data**. Split-versioned `train/ val/ test/` (deterministic hash of collector + geohash cell — never random, no leakage across splits) with `images/`, `frames/` (extracted video frames), `videos/` + per-split labels in the requested formats (default all three: COCO json, YOLO txt, Pascal VOC xml with polygon extension) + `classes.txt`, plus top-level `manifest.json` (records the formats), bundle README and `tools/convert_to_tfrecord.py` (self-contained TFRecord converter for TensorFlow; PyTorch users consume the COCO json directly via `torchvision.datasets.CocoDetection` — no conversion needed). Every export records a `dataset_exports` row with the streamed zip's sha256.
 - `GET /admin/export/raw.zip` — raw testing bundle: same sample set, unmodified media + full GPS (meta/track) + all annotations with statuses and corrected coords. Raw media/GPS is never deleted from storage.
 - `GET /admin/datasets`, `GET /admin/datasets/:id/manifest.json` — dataset version registry.
 - `POST /admin/export/drive {bundle: training|raw}` — same builders into a dated Drive folder.

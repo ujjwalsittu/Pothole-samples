@@ -32,6 +32,10 @@ export const config = {
 
   /** OSRM base URL for map-matching (e.g. https://router.project-osrm.org). */
   osrmUrl: env('OSRM_URL'),
+  /** Working directory for the managed OSRM instance (downloads + graphs). */
+  osrmDataDir: path.resolve(env('OSRM_DATA_DIR', './osrm-data')),
+  /** Port the managed osrm-routed instance listens on. */
+  osrmPort: Number(env('OSRM_PORT', '5001')),
 
   corsOrigins: env('CORS_ORIGINS')
     .split(',')

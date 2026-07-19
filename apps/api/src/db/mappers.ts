@@ -4,6 +4,7 @@ import type {
   AuditLogEntry,
   Campaign,
   LedgerEntry,
+  ModelRelease,
   PackageInfo,
   Sample,
   Settlement,
@@ -148,6 +149,20 @@ export function rowToCampaign(r: Row): Campaign {
     active: Boolean(r.active),
     startsAt: iso(r.starts_at),
     endsAt: iso(r.ends_at),
+    createdAt: iso(r.created_at) as string,
+  };
+}
+
+export function rowToModelRelease(r: Row): ModelRelease {
+  return {
+    id: r.id,
+    version: num(r.version),
+    filename: r.filename,
+    sha256: r.sha256,
+    sizeBytes: num(r.size_bytes),
+    notes: r.notes ?? null,
+    active: Boolean(r.active),
+    uploadedBy: r.uploaded_by ?? '',
     createdAt: iso(r.created_at) as string,
   };
 }

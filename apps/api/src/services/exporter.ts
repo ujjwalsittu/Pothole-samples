@@ -17,7 +17,7 @@
  * storage by any export.
  */
 import path from 'node:path';
-import type { DatasetSplit, MediaType, PolygonPoint } from '@pothole/shared';
+import type { DatasetSplit, ExportFormat, MediaType, PolygonPoint } from '@pothole/shared';
 import { query } from '../db/pool';
 import { rowToAnnotation, rowToSample } from '../db/mappers';
 import { frameRelPath } from './frames';
@@ -31,12 +31,16 @@ export type BundleFile =
 
 export type BundleName = 'training' | 'raw';
 
+export const ALL_EXPORT_FORMATS: ExportFormat[] = ['coco', 'yolo', 'voc'];
+
 export interface TrainingManifestDraft {
   sampleCount: number;
   annotationCount: number;
   labelCounts: Record<string, number>;
   splitCounts: Record<DatasetSplit, number>;
   samples: Array<{ sampleId: string; mediaType: MediaType; split: DatasetSplit; sha256: string }>;
+  /** Label formats this bundle was generated with. */
+  formats: ExportFormat[];
 }
 
 export interface TrainingBundleResult {
@@ -163,6 +167,172 @@ const shoelace = (poly: PolygonPoint[]): number => {
 
 const round = (n: number, dp = 4): number => Math.round(n * 10 ** dp) / 10 ** dp;
 
+const xmlEscape = (s: string): string =>
+  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+/**
+ * Pascal VOC XML for one image. Coordinates are pixels when dims are known;
+ * otherwise normalized [0..1] and flagged with <normalized>true</normalized>.
+ * Each <object> also carries a non-standard <polygon> extension listing the
+ * annotation's polygon points.
+ */
+function vocXml(
+  fileName: string,
+  dims: { width: number; height: number } | null,
+  anns: Array<{ label: string; polygon: PolygonPoint[] }>,
+): string {
+  const sx = dims ? dims.width : 1;
+  const sy = dims ? dims.height : 1;
+  const r = (n: number) => (dims ? Math.round(n) : Math.round(n * 10000) / 10000);
+  const objects = anns
+    .map((a) => {
+      const xs = a.polygon.map((p) => p.x * sx);
+      const ys = a.polygon.map((p) => p.y * sy);
+      const pts = a.polygon
+        .map((p) => `      <pt><x>${r(p.x * sx)}</x><y>${r(p.y * sy)}</y></pt>`)
+        .join('\n');
+      return `  <object>
+    <name>${xmlEscape(a.label)}</name>
+    <pose>Unspecified</pose>
+    <truncated>0</truncated>
+    <difficult>0</difficult>
+    <bndbox>
+      <xmin>${r(Math.min(...xs))}</xmin>
+      <ymin>${r(Math.min(...ys))}</ymin>
+      <xmax>${r(Math.max(...xs))}</xmax>
+      <ymax>${r(Math.max(...ys))}</ymax>
+    </bndbox>
+    <polygon>
+${pts}
+    </polygon>
+  </object>`;
+    })
+    .join('\n');
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<annotation>
+  <filename>${xmlEscape(fileName)}</filename>
+  <size>
+    <width>${dims ? dims.width : 1}</width>
+    <height>${dims ? dims.height : 1}</height>
+    <depth>3</depth>
+  </size>
+  <normalized>${dims ? 'false' : 'true'}</normalized>
+  <segmented>0</segmented>
+${objects}
+</annotation>
+`;
+}
+
+/** Self-contained TFRecord converter shipped inside the bundle (tools/). */
+const TFRECORD_SCRIPT = `#!/usr/bin/env python3
+"""Convert this bundle's COCO annotations + images into TFRecord shards.
+
+Usage (from the bundle root, per split):
+    python tools/convert_to_tfrecord.py --split train --out train.tfrecord --shards 4
+
+Requires: tensorflow (pip install tensorflow). PyTorch users do NOT need
+this — point torchvision.datasets.CocoDetection at
+<split>/labels/coco/annotations.json and the <split>/ image root directly.
+"""
+import argparse
+import json
+import os
+
+import tensorflow as tf
+
+
+def _bytes(v):
+    return tf.train.Feature(bytes_list=tf.train.BytesList(value=v))
+
+
+def _floats(v):
+    return tf.train.Feature(float_list=tf.train.FloatList(value=v))
+
+
+def _ints(v):
+    return tf.train.Feature(int64_list=tf.train.Int64List(value=v))
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--split", default="train", choices=["train", "val", "test"])
+    ap.add_argument("--out", default=None, help="output path base (default <split>.tfrecord)")
+    ap.add_argument("--shards", type=int, default=1)
+    args = ap.parse_args()
+
+    root = args.split
+    out_base = args.out or (args.split + ".tfrecord")
+    coco_path = os.path.join(root, "labels", "coco", "annotations.json")
+    with open(coco_path) as f:
+        coco = json.load(f)
+
+    cats = {c["id"]: c["name"] for c in coco["categories"]}
+    anns_by_image = {}
+    for a in coco["annotations"]:
+        anns_by_image.setdefault(a["image_id"], []).append(a)
+
+    writers = [
+        tf.io.TFRecordWriter("%s-%05d-of-%05d" % (out_base, i, args.shards))
+        if args.shards > 1
+        else tf.io.TFRecordWriter(out_base)
+        for i in range(args.shards if args.shards > 1 else 1)
+    ]
+
+    written = skipped = 0
+    for idx, img in enumerate(coco["images"]):
+        img_path = os.path.join(root, img["file_name"])
+        if not os.path.exists(img_path):
+            skipped += 1
+            continue
+        with open(img_path, "rb") as f:
+            encoded = f.read()
+        normalized = bool(img.get("normalized"))
+        width = img.get("width", 1)
+        height = img.get("height", 1)
+
+        xmins, xmaxs, ymins, ymaxs, texts, labels = [], [], [], [], [], []
+        for a in anns_by_image.get(img["id"], []):
+            x, y, w, h = a["bbox"]
+            if normalized:
+                xmins.append(x); xmaxs.append(x + w)
+                ymins.append(y); ymaxs.append(y + h)
+            else:
+                xmins.append(x / width); xmaxs.append((x + w) / width)
+                ymins.append(y / height); ymaxs.append((y + h) / height)
+            texts.append(cats[a["category_id"]].encode("utf8"))
+            labels.append(a["category_id"])
+
+        fmt = os.path.splitext(img["file_name"])[1].lstrip(".").lower() or "jpeg"
+        example = tf.train.Example(
+            features=tf.train.Features(
+                feature={
+                    "image/encoded": _bytes([encoded]),
+                    "image/format": _bytes([fmt.encode("utf8")]),
+                    "image/filename": _bytes([img["file_name"].encode("utf8")]),
+                    "image/source_id": _bytes([str(img["id"]).encode("utf8")]),
+                    "image/height": _ints([height]),
+                    "image/width": _ints([width]),
+                    "image/object/bbox/xmin": _floats(xmins),
+                    "image/object/bbox/xmax": _floats(xmaxs),
+                    "image/object/bbox/ymin": _floats(ymins),
+                    "image/object/bbox/ymax": _floats(ymaxs),
+                    "image/object/class/text": _bytes(texts),
+                    "image/object/class/label": _ints(labels),
+                }
+            )
+        )
+        writers[idx % len(writers)].write(example.SerializeToString())
+        written += 1
+
+    for w in writers:
+        w.close()
+    print("wrote %d examples (%d skipped, no image file)" % (written, skipped))
+
+
+if __name__ == "__main__":
+    main()
+`;
+
 const TRAINING_README = `# Pothole training bundle
 
 Generated for pothole-detection model training. Contains samples with review
@@ -190,13 +360,30 @@ Structure (inside each of train/ val/ test/):
 - labels/yolo/<imageStem>.txt        one line per annotation:
                                      "<classIndex> <cx> <cy> <w> <h>" (normalized,
                                      bbox from polygon extents)
+- labels/voc/<imageStem>.xml         Pascal VOC XML; <bndbox> in pixels when the
+                                     image size was known, otherwise normalized
+                                     [0..1] with <normalized>true</normalized>;
+                                     each <object> also carries a <polygon>
+                                     extension with the raw polygon points
 - labels/classes.txt                 class names; line N = YOLO class index N
                                      = COCO category id N+1 (identical across splits)
 - videos/<sampleId>.<ext>            original video bytes
 - videos/<sampleId>.annotations.json [{videoTimeSec, label, polygon}] only
 
-Top level: manifest.json (dataset version manifest; id/bundleSha256 live in
-the server-side export registry, GET /admin/datasets).
+Label formats are selectable at export time (?formats=coco,yolo,voc — this
+bundle's manifest.json lists which were generated).
+
+Top level:
+- manifest.json                      dataset version manifest (id/bundleSha256
+                                     live in the server-side export registry,
+                                     GET /admin/datasets)
+- tools/convert_to_tfrecord.py       self-contained TFRecord converter for
+                                     TensorFlow object-detection pipelines:
+                                       python tools/convert_to_tfrecord.py --split train --out train.tfrecord --shards 4
+                                     (requires the COCO format + tensorflow).
+                                     PyTorch users need NO conversion — use
+                                     torchvision.datasets.CocoDetection on
+                                     <split>/labels/coco/annotations.json.
 `;
 
 interface CocoImage {
@@ -224,9 +411,14 @@ interface PerSplitAcc {
   annId: number;
 }
 
-export async function buildTrainingBundle(): Promise<TrainingBundleResult> {
+export async function buildTrainingBundle(
+  formats: ExportFormat[] = ALL_EXPORT_FORMATS,
+): Promise<TrainingBundleResult> {
   const rows = await loadSamples(['accepted', 'partially_accepted'], 'all');
-  const files: BundleFile[] = [{ kind: 'text', name: 'README.md', content: TRAINING_README }];
+  const files: BundleFile[] = [
+    { kind: 'text', name: 'README.md', content: TRAINING_README },
+    { kind: 'text', name: 'tools/convert_to_tfrecord.py', content: TFRECORD_SCRIPT },
+  ];
   const sharp = await getSharp();
 
   interface Ann {
@@ -333,11 +525,20 @@ export async function buildTrainingBundle(): Promise<TrainingBundleResult> {
         `${classIndex.get(ann.label) ?? 0} ${round(bbox.x + bbox.w / 2)} ${round(bbox.y + bbox.h / 2)} ${round(bbox.w)} ${round(bbox.h)}`,
       );
     }
-    files.push({
-      kind: 'text',
-      name: `${split}/labels/yolo/${stem}.txt`,
-      content: yoloLines.join('\n') + (yoloLines.length ? '\n' : ''),
-    });
+    if (formats.includes('yolo')) {
+      files.push({
+        kind: 'text',
+        name: `${split}/labels/yolo/${stem}.txt`,
+        content: yoloLines.join('\n') + (yoloLines.length ? '\n' : ''),
+      });
+    }
+    if (formats.includes('voc')) {
+      files.push({
+        kind: 'text',
+        name: `${split}/labels/voc/${stem}.xml`,
+        content: vocXml(opts.bundlePath, dims, opts.anns),
+      });
+    }
   };
 
   for (const row of rows) {
@@ -403,23 +604,25 @@ export async function buildTrainingBundle(): Promise<TrainingBundleResult> {
       name: `${split}/labels/classes.txt`,
       content: classes.join('\n') + (classes.length ? '\n' : ''),
     });
-    files.push({
-      kind: 'text',
-      name: `${split}/labels/coco/annotations.json`,
-      content: JSON.stringify(
-        {
-          info: {
-            description: `PotholeCollect training export (${split})`,
-            date_created: new Date().toISOString(),
+    if (formats.includes('coco')) {
+      files.push({
+        kind: 'text',
+        name: `${split}/labels/coco/annotations.json`,
+        content: JSON.stringify(
+          {
+            info: {
+              description: `PotholeCollect training export (${split})`,
+              date_created: new Date().toISOString(),
+            },
+            images: a.images,
+            categories: classes.map((c, i) => ({ id: i + 1, name: c })),
+            annotations: a.annotations,
           },
-          images: a.images,
-          categories: classes.map((c, i) => ({ id: i + 1, name: c })),
-          annotations: a.annotations,
-        },
-        null,
-        2,
-      ),
-    });
+          null,
+          2,
+        ),
+      });
+    }
   }
 
   const manifest: TrainingManifestDraft = {
@@ -428,6 +631,7 @@ export async function buildTrainingBundle(): Promise<TrainingBundleResult> {
     labelCounts,
     splitCounts,
     samples: manifestSamples,
+    formats,
   };
   files.push({
     kind: 'text',
@@ -438,8 +642,11 @@ export async function buildTrainingBundle(): Promise<TrainingBundleResult> {
   return { files, manifest };
 }
 
-export async function buildBundle(bundle: BundleName): Promise<BundleFile[]> {
+export async function buildBundle(
+  bundle: BundleName,
+  formats: ExportFormat[] = ALL_EXPORT_FORMATS,
+): Promise<BundleFile[]> {
   return bundle === 'training'
-    ? (await buildTrainingBundle()).files
+    ? (await buildTrainingBundle(formats)).files
     : buildRawBundle(['accepted', 'partially_accepted'], 'all');
 }

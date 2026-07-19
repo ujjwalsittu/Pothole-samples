@@ -11,6 +11,7 @@ import { dashboardRouter } from './routes/dashboard';
 import { earningsRouter } from './routes/earnings';
 import { mediaRouter } from './routes/media';
 import { metaRouter } from './routes/meta';
+import { modelsRouter } from './routes/models';
 import { samplesRouter } from './routes/samples';
 import { usersRouter } from './routes/users';
 
@@ -41,6 +42,7 @@ app.use(base, authChain, samplesRouter);
 app.use(base, authChain, mediaRouter);
 app.use(base, authChain, earningsRouter);
 app.use(base, authChain, communityRouter);
+app.use(base, authChain, modelsRouter);
 app.use(`${base}/admin`, authChain, adminRouter);
 
 app.use(notFoundHandler);

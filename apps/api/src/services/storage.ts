@@ -48,7 +48,7 @@ export function absPath(relPath: string): string {
 }
 
 export async function ensureStorageDirs(): Promise<void> {
-  for (const d of ['samples', 'profiles', 'proofs', 'frames', 'thumbs']) {
+  for (const d of ['samples', 'profiles', 'proofs', 'frames', 'thumbs', 'models']) {
     await fsp.mkdir(path.join(config.storageDir, d), { recursive: true });
   }
 }
@@ -104,6 +104,18 @@ export function readStream(relPath: string, opts?: { start?: number; end?: numbe
  * so both sides always agree.
  */
 const HASH_CHUNK_BYTES = 4 * UPLOAD.CHUNK_BYTES; // must mirror the mobile client
+
+/** Same content-hash scheme over an in-memory buffer (e.g. model uploads —
+ * the mobile OTA updater verifies downloads against this exact scheme). */
+export function contentHashOfBuffer(buf: Buffer): string {
+  const sha256Hex = (s: string) => crypto.createHash('sha256').update(s, 'utf8').digest('hex');
+  if (buf.length <= HASH_CHUNK_BYTES) return sha256Hex(buf.toString('base64'));
+  const chunkDigests: string[] = [];
+  for (let pos = 0; pos < buf.length; pos += HASH_CHUNK_BYTES) {
+    chunkDigests.push(sha256Hex(buf.subarray(pos, Math.min(pos + HASH_CHUNK_BYTES, buf.length)).toString('base64')));
+  }
+  return sha256Hex(chunkDigests.join(''));
+}
 
 export async function contentHashOfFile(relPath: string): Promise<string> {
   const abs = absPath(relPath);
