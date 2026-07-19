@@ -528,14 +528,19 @@ export async function deployAws(cfg) {
     );
   }
   const scriptLocal = path.join(os.tmpdir(), `pothole-provision-${Date.now()}.sh`);
+  // alwaysRun: the tmp path is unique per launch and the script content can
+  // change on resume (artifacts) — skipping would scp a nonexistent file.
   await runStep('Write provisioning script locally', () => {
     if (isDryRun()) return;
     fs.writeFileSync(scriptLocal, script, { mode: 0o700 });
-  });
+  }, { alwaysRun: true });
   await runStep(
     'Upload script to the server',
     () => scp(pemPath, isDryRun() ? '<provision.sh>' : scriptLocal, ip, '/tmp/pothole-provision.sh'),
-    { manual: `scp -i ${pemPath} ${scriptLocal} ubuntu@${ip}:/tmp/pothole-provision.sh` },
+    {
+      manual: `scp -i ${pemPath} ${scriptLocal} ubuntu@${ip}:/tmp/pothole-provision.sh`,
+      alwaysRun: true,
+    },
   );
   await runStep(
     'Run provisioning (apt, node, postgres, clone, .env, migrate, systemd, nginx, certbot)',
