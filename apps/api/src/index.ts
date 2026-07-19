@@ -14,6 +14,7 @@ import { metaRouter } from './routes/meta';
 import { modelsRouter } from './routes/models';
 import { samplesRouter } from './routes/samples';
 import { usersRouter } from './routes/users';
+import { withdrawalsRouter } from './routes/withdrawals';
 
 const app = express();
 app.disable('x-powered-by');
@@ -43,6 +44,7 @@ app.use(base, authChain, mediaRouter);
 app.use(base, authChain, earningsRouter);
 app.use(base, authChain, communityRouter);
 app.use(base, authChain, modelsRouter);
+app.use(base, authChain, withdrawalsRouter);
 app.use(`${base}/admin`, authChain, adminRouter);
 
 app.use(notFoundHandler);

@@ -3,7 +3,7 @@ import { query } from '../db/pool';
 import { rowToLedgerEntry } from '../db/mappers';
 import { asyncH, ok } from '../http';
 import { requireUser } from '../middleware/auth';
-import { balanceSummary } from '../services/ledger';
+import { ZERO_BALANCE, balanceSummary } from '../services/ledger';
 
 export const earningsRouter = Router();
 
@@ -23,6 +23,10 @@ earningsRouter.get(
   '/earnings/summary',
   requireUser,
   asyncH(async (req, res) => {
-    ok(res, await balanceSummary((t, p) => query(t, p), req.user!.id));
+    // Money is a collectors-only concept; everyone else sees zeros.
+    ok(
+      res,
+      req.user!.isCollector ? await balanceSummary((t, p) => query(t, p), req.user!.id) : ZERO_BALANCE,
+    );
   }),
 );

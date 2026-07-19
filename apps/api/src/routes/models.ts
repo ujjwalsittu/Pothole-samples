@@ -23,6 +23,7 @@ modelsRouter.get(
     const release = rowToModelRelease(rows[0]);
     ok(res, {
       version: release.version,
+      kind: release.kind,
       sha256: release.sha256,
       sizeBytes: release.sizeBytes,
       notes: release.notes,

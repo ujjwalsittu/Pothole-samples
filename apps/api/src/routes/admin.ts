@@ -28,6 +28,7 @@ import {
   rowToSample,
   rowToSettlement,
   rowToUser,
+  rowToWithdrawal,
 } from '../db/mappers';
 import { ApiError, asyncH, ok } from '../http';
 import { requireRole } from '../middleware/auth';
@@ -123,26 +124,46 @@ adminRouter.patch(
     assertUuid(req.params.id, 'USER_NOT_FOUND', 'User');
     const body = z
       .object({
-        collectorStatus: z.enum(['student', 'professional', 'owner']).optional(),
+        collectorStatus: z.enum(['student', 'professional', 'self', 'owner']).optional(),
         role: z.enum(['collector', 'admin', 'owner']).optional(),
         packageCode: z.string().trim().min(1).optional(),
+        isCollector: z.boolean().optional(),
       })
       .parse(req.body ?? {});
     if (body.packageCode) {
       const pkg = await query('SELECT code FROM packages WHERE code = $1', [body.packageCode]);
       if (!pkg.rows[0]) throw new ApiError(404, 'PACKAGE_NOT_FOUND', 'Unknown package code');
     }
+    const before = await query('SELECT is_collector FROM users WHERE id = $1', [req.params.id]);
+    if (!before.rows[0]) throw new ApiError(404, 'USER_NOT_FOUND', 'User not found');
+    const wasCollector = Boolean(before.rows[0].is_collector);
+
     const { rows } = await query(
       `UPDATE users SET
          collector_status = COALESCE($2, collector_status),
          role             = COALESCE($3, role),
-         package_code     = COALESCE($4, package_code)
+         package_code     = COALESCE($4, package_code),
+         is_collector     = COALESCE($5, is_collector)
        WHERE id = $1 RETURNING *`,
-      [req.params.id, body.collectorStatus ?? null, body.role ?? null, body.packageCode ?? null],
+      [
+        req.params.id,
+        body.collectorStatus ?? null,
+        body.role ?? null,
+        body.packageCode ?? null,
+        body.isCollector ?? null,
+      ],
     );
-    if (!rows[0]) throw new ApiError(404, 'USER_NOT_FOUND', 'User not found');
+    const user = rowToUser(rows[0]);
+
+    // Freshly designated collector: introduce their plan.
+    if (!wasCollector && user.isCollector) {
+      const pkg = await query('SELECT name FROM packages WHERE code = $1', [user.packageCode]);
+      const planName = (pkg.rows[0]?.name as string | undefined) ?? user.packageCode;
+      void mail.collectorDesignated(user.email, user.fullName, planName);
+      void sendPush(user.id, 'You are now a collector', `Welcome to the ${planName} plan!`);
+    }
     void audit(req.user!.id, 'user.update', 'user', req.params.id, body);
-    ok(res, rowToUser(rows[0]));
+    ok(res, user);
   }),
 );
 
@@ -458,28 +479,35 @@ adminRouter.post(
         );
       }
 
-      // POLICY: accepted and partially_accepted grant the SAME full
-      // per-sample credit (payout/quota), multiplied by the campaign boost
-      // captured at init time (samples.boost_applied). Adjust here if partial
-      // payouts should ever be prorated.
-      let amountInr = 0;
+      // EARNINGS STATE MACHINE: only admin-designated collectors accrue
+      // money. Per-sample earning = (track payout / track quota) × campaign
+      // boost, inserted as 'upcoming'; it flips to 'active' (withdrawable)
+      // only when the media track's quota completes. Accepted and
+      // partially_accepted credit the SAME amount (documented policy).
+      let amountInr: number | null = null; // null = non-collector, no money copy
       const boost = sample.boost_applied == null ? 1 : Number(sample.boost_applied);
       const isCredit = body.decision === 'accepted' || body.decision === 'partially_accepted';
-      if (isCredit) {
+      const paid = isCredit && collector.isCollector;
+      const isVideo = sample.media_type === 'video';
+
+      if (paid) {
         const p = await client.query(
-          'SELECT name, video_quota, photo_quota, payout_inr, next_package_code FROM packages WHERE code = $1',
+          `SELECT name, video_quota, photo_quota, video_payout_inr, photo_payout_inr, next_package_code
+           FROM packages WHERE code = $1`,
           [collector.packageCode],
         );
         const pkg = p.rows[0];
         if (!pkg) throw new ApiError(500, 'PACKAGE_MISSING', 'Collector has no package configured');
-        const quota = sample.media_type === 'video' ? Number(pkg.video_quota) : Number(pkg.photo_quota);
-        const baseCredit = Math.round((Number(pkg.payout_inr) / quota) * 100) / 100;
+        const quota = isVideo ? Number(pkg.video_quota) : Number(pkg.photo_quota);
+        const trackPayout = isVideo ? Number(pkg.video_payout_inr) : Number(pkg.photo_payout_inr);
+        const baseCredit = Math.round((trackPayout / quota) * 100) / 100;
         amountInr = Math.round(baseCredit * boost * 100) / 100;
         const boostNote = boost !== 1 ? ` (campaign boost ×${boost})` : '';
         await insertLedgerEntry(client, {
           userId: collector.id,
           type: 'earning',
           amountInr,
+          earningState: 'upcoming',
           sampleId: sample.id,
           note:
             body.decision === 'accepted'
@@ -504,14 +532,15 @@ adminRouter.post(
         ],
       );
 
-      // Auto-enroll (feature 5): when this acceptance completes either quota
-      // of the collector's package, switch to next_package_code (if set).
+      // Track completion + package auto-enroll (collectors only).
+      let trackCompleted = false;
       let packageCompleted: { packageName: string; payoutInr: number; nextPackageName: string | null } | null =
         null;
-      if (isCredit) {
+      if (paid) {
         const pkgRow = (
           await client.query(
-            'SELECT name, video_quota, photo_quota, payout_inr, next_package_code FROM packages WHERE code = $1',
+            `SELECT name, video_quota, photo_quota, video_payout_inr, photo_payout_inr, next_package_code
+             FROM packages WHERE code = $1`,
             [collector.packageCode],
           )
         ).rows[0];
@@ -529,10 +558,33 @@ adminRouter.post(
         const photos = Number(done.photos);
         const vQuota = Number(pkgRow.video_quota);
         const pQuota = Number(pkgRow.photo_quota);
-        const isVideo = sample.media_type === 'video';
-        const completeNow = vids >= vQuota || photos >= pQuota;
+        const trackCount = isVideo ? vids : photos;
+        const trackQuota = isVideo ? vQuota : pQuota;
+
+        // Whenever the accepted count crosses a multiple of the track quota,
+        // flip exactly one quota-block of the OLDEST upcoming earnings of
+        // this media type to 'active' (withdrawable).
+        if (trackQuota > 0 && trackCount > 0 && trackCount % trackQuota === 0) {
+          trackCompleted = true;
+          await client.query(
+            `UPDATE ledger_entries SET earning_state = 'active'
+             WHERE id IN (
+               SELECT le.id FROM ledger_entries le
+               JOIN samples s ON s.id = le.sample_id
+               WHERE le.user_id = $1 AND le.type = 'earning'
+                 AND le.earning_state = 'upcoming' AND s.media_type = $2
+               ORDER BY le.created_at ASC, le.id ASC
+               LIMIT $3
+             )`,
+            [collector.id, sample.media_type, trackQuota],
+          );
+        }
+
+        // Auto-enroll only when BOTH tracks of the package have completed at
+        // least once (crossing edge, not on every subsequent acceptance).
+        const completeNow = vids >= vQuota && photos >= pQuota;
         const completeBefore =
-          vids - (isVideo ? 1 : 0) >= vQuota || photos - (isVideo ? 0 : 1) >= pQuota;
+          vids - (isVideo ? 1 : 0) >= vQuota && photos - (isVideo ? 0 : 1) >= pQuota;
         if (completeNow && !completeBefore) {
           let nextPackageName: string | null = null;
           const nextCode = pkgRow.next_package_code as string | null;
@@ -550,15 +602,21 @@ adminRouter.post(
           }
           packageCompleted = {
             packageName: pkgRow.name as string,
-            payoutInr: Number(pkgRow.payout_inr),
+            payoutInr: Number(pkgRow.video_payout_inr) + Number(pkgRow.photo_payout_inr),
             nextPackageName,
           };
         }
       }
 
-      return { sample: rowToSample(upd.rows[0]), collector, amountInr, packageCompleted };
+      return { sample: rowToSample(upd.rows[0]), collector, amountInr, trackCompleted, packageCompleted };
     });
 
+    const moneyPush =
+      result.amountInr == null
+        ? 'Thank you for helping map our roads!'
+        : result.trackCompleted
+          ? `₹${result.amountInr} added — your track completed, earnings unlocked for withdrawal!`
+          : `₹${result.amountInr} added to upcoming earnings.`;
     if (body.decision === 'accepted') {
       void mail.sampleAccepted(
         result.collector.email,
@@ -566,7 +624,7 @@ adminRouter.post(
         result.sample.id,
         result.amountInr,
       );
-      void sendPush(result.collector.id, 'Sample accepted', `₹${result.amountInr} credited to your balance.`);
+      void sendPush(result.collector.id, 'Submission accepted', moneyPush);
     } else if (body.decision === 'partially_accepted') {
       void mail.samplePartiallyAccepted(
         result.collector.email,
@@ -574,11 +632,7 @@ adminRouter.post(
         result.sample.id,
         result.amountInr,
       );
-      void sendPush(
-        result.collector.id,
-        'Sample accepted with adjustments',
-        `₹${result.amountInr} credited to your balance.`,
-      );
+      void sendPush(result.collector.id, 'Accepted with adjustments', moneyPush);
     } else {
       void mail.sampleRejected(
         result.collector.email,
@@ -586,7 +640,7 @@ adminRouter.post(
         result.sample.id,
         body.reason ?? '',
       );
-      void sendPush(result.collector.id, 'Sample rejected', body.reason ?? 'Please capture a new sample.');
+      void sendPush(result.collector.id, 'Submission rejected', body.reason ?? 'Please capture a new sample.');
     }
 
     if (result.packageCompleted) {
@@ -650,10 +704,17 @@ adminRouter.get(
 
 type TxClient = Parameters<Parameters<typeof withTransaction>[0]>[0];
 
-/** Unsettled balance (₹) for a user; caller must hold the user row lock. */
+/**
+ * ACTIVE unsettled balance (₹) for a user — only earnings whose track has
+ * completed (earning_state='active') minus settlements are withdrawable.
+ * Caller must hold the user row lock.
+ */
 async function unsettledBalance(client: TxClient, userId: string): Promise<number> {
   const bal = await client.query<{ balance: string }>(
-    `SELECT COALESCE(SUM(amount_inr), 0) AS balance FROM ledger_entries WHERE user_id = $1`,
+    `SELECT
+       COALESCE(SUM(amount_inr) FILTER (WHERE type = 'earning' AND earning_state = 'active'), 0)
+       + COALESCE(SUM(amount_inr) FILTER (WHERE type = 'settlement'), 0) AS balance
+     FROM ledger_entries WHERE user_id = $1`,
     [userId],
   );
   return Math.round(Number(bal.rows[0].balance) * 100) / 100;
@@ -661,7 +722,8 @@ async function unsettledBalance(client: TxClient, userId: string): Promise<numbe
 
 /**
  * Execute the ledger side of a settlement: negative running-balance entry +
- * mark earnings settled oldest-first up to the amount.
+ * mark ACTIVE earnings settled oldest-first up to the amount. Also flips any
+ * withdrawal request linked to this settlement to 'paid'.
  */
 async function settleLedger(
   client: TxClient,
@@ -679,7 +741,7 @@ async function settleLedger(
   });
   const earnings = await client.query<{ id: string; amount_inr: string }>(
     `SELECT id, amount_inr FROM ledger_entries
-     WHERE user_id = $1 AND type = 'earning' AND settled = false
+     WHERE user_id = $1 AND type = 'earning' AND earning_state = 'active' AND settled = false
      ORDER BY created_at ASC, id ASC
      FOR UPDATE`,
     [collectorId],
@@ -697,11 +759,27 @@ async function settleLedger(
       [toSettle],
     );
   }
+  await client.query(
+    `UPDATE withdrawal_requests SET state = 'paid' WHERE settlement_id = $1 AND state = 'approved'`,
+    [settlementId],
+  );
 }
 
 function notifySettled(collector: User, amountInr: number, utr: string | null): void {
   void mail.settlementCompleted(collector.email, collector.fullName, amountInr, utr);
   void sendPush(collector.id, 'Payout settled', `₹${amountInr} has been paid to your UPI.`);
+}
+
+/** After a settlement executes, notify + audit any withdrawal it paid. */
+async function notifyLinkedWithdrawalPaid(settlementId: string, collector: User, utr: string | null): Promise<void> {
+  const { rows } = await query(
+    `SELECT * FROM withdrawal_requests WHERE settlement_id = $1 AND state = 'paid'`,
+    [settlementId],
+  );
+  if (rows[0]) {
+    void mail.withdrawalPaid(collector.email, collector.fullName, Number(rows[0].amount_inr), utr);
+    void sendPush(collector.id, 'Withdrawal paid', `₹${Number(rows[0].amount_inr)} has been paid to your UPI.`);
+  }
 }
 
 /**
@@ -765,6 +843,7 @@ adminRouter.post(
       });
     } else {
       notifySettled(result.collector, result.amountInr, result.settlement.utrReference);
+      void notifyLinkedWithdrawalPaid(result.settlement.id, result.collector, result.settlement.utrReference);
       void audit(admin.id, 'settlement.settle', 'settlement', result.settlement.id, {
         userId: result.collector.id,
         amountInr: result.amountInr,
@@ -813,6 +892,7 @@ adminRouter.post(
     });
 
     notifySettled(result.collector, result.amountInr, result.settlement.utrReference);
+    void notifyLinkedWithdrawalPaid(result.settlement.id, result.collector, result.settlement.utrReference);
     void audit(admin.id, 'settlement.confirm', 'settlement', result.settlement.id, {
       userId: result.collector.id,
       amountInr: result.amountInr,
@@ -836,6 +916,121 @@ adminRouter.post(
     }
     void audit(req.user!.id, 'settlement.cancel', 'settlement', req.params.id);
     ok(res, rowToSettlement(rows[0]));
+  }),
+);
+
+/* ----------------------------- withdrawals ------------------------------ */
+
+adminRouter.get(
+  '/withdrawals',
+  asyncH(async (req, res) => {
+    const state = typeof req.query.state === 'string' ? req.query.state : null;
+    const { rows } = await query(
+      `SELECT w.*, u.email AS u_email, u.full_name AS u_full_name
+       FROM withdrawal_requests w JOIN users u ON u.id = w.user_id
+       WHERE ($1::text IS NULL OR w.state = $1)
+       ORDER BY w.created_at DESC`,
+      [state],
+    );
+    ok(
+      res,
+      rows.map((r) => ({
+        ...rowToWithdrawal(r),
+        user: { id: r.user_id, email: r.u_email, fullName: r.u_full_name },
+      })),
+    );
+  }),
+);
+
+/**
+ * POST /admin/withdrawals/:id/approve — approves the request and runs the
+ * standard settlement flow for its amount. Below the two-admin threshold the
+ * payout settles immediately (withdrawal → 'paid'); at/above it a settlement
+ * is created awaiting a SECOND admin's confirmation and the withdrawal stays
+ * 'approved' until that confirmation executes the ledger.
+ */
+adminRouter.post(
+  '/withdrawals/:id/approve',
+  asyncH(async (req, res) => {
+    assertUuid(req.params.id, 'WITHDRAWAL_NOT_FOUND', 'Withdrawal');
+    const admin = req.user!;
+
+    const result = await withTransaction(async (client) => {
+      const w = await client.query('SELECT * FROM withdrawal_requests WHERE id = $1 FOR UPDATE', [
+        req.params.id,
+      ]);
+      const wr = w.rows[0];
+      if (!wr) throw new ApiError(404, 'WITHDRAWAL_NOT_FOUND', 'Withdrawal request not found');
+      if (wr.state !== 'requested') {
+        throw new ApiError(409, 'ALREADY_DECIDED', `Withdrawal is already ${wr.state}`);
+      }
+
+      const u = await client.query('SELECT * FROM users WHERE id = $1 FOR UPDATE', [wr.user_id]);
+      const collector = rowToUser(u.rows[0]);
+      const balance = await unsettledBalance(client, collector.id);
+      if (balance <= 0) throw new ApiError(409, 'NO_BALANCE', 'User has no active unsettled balance');
+      const amountInr = Math.min(Number(wr.amount_inr), balance);
+      const needsConfirmation = amountInr >= SETTLEMENT_CONFIRM_THRESHOLD_INR;
+
+      const st = await client.query(
+        needsConfirmation
+          ? `INSERT INTO settlements
+               (user_id, amount_inr, state, confirm_state, initiated_by)
+             VALUES ($1, $2, 'initiated', 'awaiting_confirmation', $3) RETURNING *`
+          : `INSERT INTO settlements
+               (user_id, amount_inr, state, settled_by, settled_at, initiated_by)
+             VALUES ($1, $2, 'settled', $3, now(), $3) RETURNING *`,
+        [collector.id, amountInr, admin.id],
+      );
+      const settlement = rowToSettlement(st.rows[0]);
+
+      await client.query(
+        `UPDATE withdrawal_requests SET state = 'approved', decided_by = $2, decided_at = now(), settlement_id = $3
+         WHERE id = $1`,
+        [wr.id, admin.id, settlement.id],
+      );
+      if (!needsConfirmation) {
+        // settleLedger also flips the linked withdrawal 'approved' → 'paid'.
+        await settleLedger(client, collector.id, settlement.id, amountInr, null);
+      }
+      const fresh = await client.query('SELECT * FROM withdrawal_requests WHERE id = $1', [wr.id]);
+      return { withdrawal: rowToWithdrawal(fresh.rows[0]), settlement, collector, amountInr, needsConfirmation };
+    });
+
+    void mail.withdrawalApproved(result.collector.email, result.collector.fullName, result.amountInr);
+    void sendPush(result.collector.id, 'Withdrawal approved', `₹${result.amountInr} payout is being processed.`);
+    if (!result.needsConfirmation) {
+      void mail.withdrawalPaid(result.collector.email, result.collector.fullName, result.amountInr, null);
+      void sendPush(result.collector.id, 'Withdrawal paid', `₹${result.amountInr} has been paid to your UPI.`);
+    }
+    void audit(admin.id, 'withdrawal.approve', 'withdrawal', result.withdrawal.id, {
+      userId: result.collector.id,
+      amountInr: result.amountInr,
+      settlementId: result.settlement.id,
+      awaitingConfirmation: result.needsConfirmation,
+    });
+    ok(res, { withdrawal: result.withdrawal, settlement: result.settlement });
+  }),
+);
+
+adminRouter.post(
+  '/withdrawals/:id/reject',
+  asyncH(async (req, res) => {
+    assertUuid(req.params.id, 'WITHDRAWAL_NOT_FOUND', 'Withdrawal');
+    const body = z.object({ note: z.string().trim().min(1) }).parse(req.body ?? {});
+    const { rows } = await query(
+      `UPDATE withdrawal_requests SET state = 'rejected', note = $2, decided_by = $3, decided_at = now()
+       WHERE id = $1 AND state = 'requested' RETURNING *`,
+      [req.params.id, body.note, req.user!.id],
+    );
+    if (!rows[0]) throw new ApiError(409, 'ALREADY_DECIDED', 'Withdrawal is not in requested state');
+    const wr = rowToWithdrawal(rows[0]);
+    const u = await query('SELECT * FROM users WHERE id = $1', [wr.userId]);
+    const collector = rowToUser(u.rows[0]);
+    void mail.withdrawalRejected(collector.email, collector.fullName, wr.amountInr, body.note);
+    void sendPush(collector.id, 'Withdrawal rejected', body.note);
+    void audit(req.user!.id, 'withdrawal.reject', 'withdrawal', wr.id, { note: body.note });
+    ok(res, wr);
   }),
 );
 
@@ -946,8 +1141,9 @@ adminRouter.post(
         code: z.string().trim().min(1).max(64).regex(/^[A-Z0-9_]+$/i),
         name: z.string().trim().min(1),
         videoQuota: z.coerce.number().int().positive(),
+        videoPayoutInr: z.coerce.number().int().positive(),
         photoQuota: z.coerce.number().int().positive(),
-        payoutInr: z.coerce.number().int().positive(),
+        photoPayoutInr: z.coerce.number().int().positive(),
         active: z.boolean().optional(),
         nextPackageCode: z.string().trim().nullish(),
       })
@@ -955,14 +1151,16 @@ adminRouter.post(
     const exists = await query('SELECT code FROM packages WHERE code = $1', [body.code]);
     if (exists.rows[0]) throw new ApiError(409, 'PACKAGE_EXISTS', 'Package code already exists');
     const { rows } = await query(
-      `INSERT INTO packages (code, name, video_quota, photo_quota, payout_inr, active, next_package_code)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      `INSERT INTO packages
+         (code, name, video_quota, video_payout_inr, photo_quota, photo_payout_inr, active, next_package_code)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
       [
         body.code,
         body.name,
         body.videoQuota,
+        body.videoPayoutInr,
         body.photoQuota,
-        body.payoutInr,
+        body.photoPayoutInr,
         body.active ?? true,
         body.nextPackageCode ?? null,
       ],
@@ -980,8 +1178,9 @@ adminRouter.patch(
       .object({
         name: z.string().trim().min(1).optional(),
         videoQuota: z.coerce.number().int().positive().optional(),
+        videoPayoutInr: z.coerce.number().int().positive().optional(),
         photoQuota: z.coerce.number().int().positive().optional(),
-        payoutInr: z.coerce.number().int().positive().optional(),
+        photoPayoutInr: z.coerce.number().int().positive().optional(),
         active: z.boolean().optional(),
         nextPackageCode: z.string().trim().nullish(),
       })
@@ -994,17 +1193,19 @@ adminRouter.patch(
       `UPDATE packages SET
          name              = COALESCE($2, name),
          video_quota       = COALESCE($3, video_quota),
-         photo_quota       = COALESCE($4, photo_quota),
-         payout_inr        = COALESCE($5, payout_inr),
-         active            = COALESCE($6, active),
-         next_package_code = CASE WHEN $8 THEN $7 ELSE next_package_code END
+         video_payout_inr  = COALESCE($4, video_payout_inr),
+         photo_quota       = COALESCE($5, photo_quota),
+         photo_payout_inr  = COALESCE($6, photo_payout_inr),
+         active            = COALESCE($7, active),
+         next_package_code = CASE WHEN $9 THEN $8 ELSE next_package_code END
        WHERE code = $1 RETURNING *`,
       [
         req.params.code,
         body.name ?? null,
         body.videoQuota ?? null,
+        body.videoPayoutInr ?? null,
         body.photoQuota ?? null,
-        body.payoutInr ?? null,
+        body.photoPayoutInr ?? null,
         body.active ?? null,
         body.nextPackageCode ?? null,
         body.nextPackageCode !== undefined,
@@ -1307,7 +1508,12 @@ adminRouter.post(
   modelUpload.single('file'),
   asyncH(async (req, res) => {
     const admin = req.user!;
-    const body = z.object({ notes: z.string().trim().optional() }).parse(req.body ?? {});
+    const body = z
+      .object({
+        notes: z.string().trim().optional(),
+        kind: z.enum(['road-binary', 'ssd-coco']).default('road-binary'),
+      })
+      .parse(req.body ?? {});
     const file = req.file;
     if (!file) throw new ApiError(400, 'FILE_REQUIRED', 'Attach the model as multipart field "file"');
     if (!file.originalname.toLowerCase().endsWith('.tflite')) {
@@ -1326,9 +1532,9 @@ adminRouter.post(
       await saveBuffer(modelRelPath(version), file.buffer);
       await client.query('UPDATE model_releases SET active = false WHERE active = true');
       const ins = await client.query(
-        `INSERT INTO model_releases (version, filename, sha256, size_bytes, notes, active, uploaded_by)
-         VALUES ($1,$2,$3,$4,$5,true,$6) RETURNING *`,
-        [version, file.originalname, sha256, file.size, body.notes ?? null, admin.id],
+        `INSERT INTO model_releases (version, filename, sha256, size_bytes, notes, kind, active, uploaded_by)
+         VALUES ($1,$2,$3,$4,$5,$6,true,$7) RETURNING *`,
+        [version, file.originalname, sha256, file.size, body.notes ?? null, body.kind, admin.id],
       );
       return rowToModelRelease(ins.rows[0]);
     });

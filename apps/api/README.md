@@ -71,10 +71,41 @@ UPDATE users SET role='admin', account_state='approved' WHERE email='you@example
 
 Public: `GET /health`, `GET /version`
 
-Collector:
+## Incentive model (v5)
 
-- `POST /auth/signup-complete` — multipart `photo?` + `fullName`, `collectorStatus`, `upiId`; idempotent; mails user + `ADMIN_EMAIL`.
-- `GET /me` (includes full `package` PackageInfo; 404 `USER_NOT_REGISTERED` before signup), `PATCH /me`, `POST /me/push-token` (Expo token), `GET /me/streak`
+The platform is presented as a **pothole submission platform** — regular users
+contribute reports voluntarily and never see money. Everything financial is
+collector-only:
+
+- **Collectors are admin-assigned** (`users.is_collector`, `PATCH /admin/users/:id {isCollector:true}`
+  — sends a "you are now a collector on plan X" mail/push). Non-collector
+  acceptances create NO ledger entries; their mails just say thank-you, and all
+  dashboard money fields are 0.
+- **Per-track packages**: each package pays its tracks independently —
+  `videoPayoutInr` for `videoQuota` accepted videos, `photoPayoutInr` for
+  `photoQuota` accepted photos.
+- **Upcoming → active**: each accepted sample accrues `(trackPayout / trackQuota) × campaignBoost`
+  as an **upcoming** earning. When the accepted count of that media type
+  crosses a multiple of the track quota, exactly one quota-block of the oldest
+  upcoming earnings of that type flips to **active** (withdrawable). An
+  incomplete track earns ₹0 withdrawable even at quota-1; tracks repeat.
+- **Withdrawals**: collectors request `POST /withdrawals {amountInr, upiId}` —
+  capped at the ACTIVE unsettled balance (`422 EXCEEDS_ACTIVE_BALANCE`
+  otherwise, explaining when upcoming unlocks). UPI is captured at first
+  withdrawal (not signup). Admin approves (runs the standard settlement flow,
+  incl. the ₹5000 two-admin confirmation threshold; withdrawal goes
+  `approved` → `paid` when the settlement executes) or rejects with a note.
+  Settlements only ever consume ACTIVE earnings, oldest first.
+- **Auto-enroll** to `next_package_code` happens only when BOTH tracks of the
+  current package have completed at least once.
+- The **first user ever** (or `PRIMARY_ADMIN_EMAIL`) bootstraps as an approved
+  `owner` at signup.
+
+Collector/user endpoints:
+
+- `POST /auth/signup-complete` — multipart `photo?` + `fullName`, `collectorStatus` (student|professional|self), `organization` (required for students), `mobile` (10-15 digits), `whatsappAvailable`, `signupLocation?` `{lat,lng,acc}`, `deviceFingerprint?` (JSON). No UPI at signup. Idempotent; mails user + `ADMIN_EMAIL`.
+- `GET /me` (includes full `package` PackageInfo; 404 `USER_NOT_REGISTERED` before signup), `PATCH /me` (upiId collectors-only), `POST /me/push-token` (Expo token), `GET /me/streak`
+- `POST /withdrawals`, `GET /withdrawals` — see incentive model above.
 - `GET /dashboard/stats` (accepted + partially accepted both fill quota; `partiallyAccepted` reported separately)
 - `GET /leaderboard?period=month|all` — top collectors (accepted+partial count, earnings tie-break, streaks, `isMe`, own row appended when outside top N)
 - `GET /campaigns/nearby?lat=&lng=` — active campaign zones containing the point or within 10 km
@@ -97,10 +128,10 @@ Admin (`role` admin/owner; every mutation is recorded in the audit log):
   `POST /admin/samples/:id/annotations` (admin-created ⇒ status `accepted`), `PATCH /admin/annotations/:id` (videoTimeSec change recomputes coords), `DELETE /admin/annotations/:id`. `pothole_count` = non-rejected annotations.
 - Review: `POST /admin/samples/:id/review` `{decision: accepted|partially_accepted|rejected, reason?}`
   - `accepted`: all pending annotations → accepted. `partially_accepted`: requires ≥1 accepted and ≥1 not-accepted annotation (`PARTIAL_REQUIRES_MIX` otherwise); remaining pending → rejected.
-  - **Payout policy: accepted and partially_accepted earn the SAME full per-sample credit** (`payout_inr / quota`, ₹100 video / ₹50 photo on the starter package), multiplied by the sample's campaign `boost_applied`. This is an intentional, documented policy — prorate in the review handler if it ever changes.
+  - **Payout policy: accepted and partially_accepted earn the SAME per-sample credit** (`trackPayout / trackQuota` × campaign boost), accrued as an **upcoming** earning — collectors only; see the incentive model section for track activation.
   - Accepting a video also extracts a frame per accepted annotation (ffmpeg).
-  - Completing either package quota (accepted+partial) auto-enrolls the collector into `next_package_code` (if set) and notifies "package complete, ₹X earned".
   - Re-review ⇒ `409 ALREADY_REVIEWED`. Rejection is **permanent**.
+- Withdrawals: `GET /admin/withdrawals?state=`, `POST /admin/withdrawals/:id/approve|reject`.
 - Campaigns: `GET|POST /admin/campaigns`, `PATCH|DELETE /admin/campaigns/:id` (polygon ≥ 3 vertices, boost, date window)
 - Packages: `GET|POST /admin/packages`, `PATCH /admin/packages/:code` (code immutable; edits affect future credits only; `next_package_code` chains packages)
 - Settlements: `GET /admin/settlements`, `GET /admin/users/:id/balance`, `POST /admin/users/:id/settlements` (multipart, capped at unsettled balance).
@@ -109,7 +140,7 @@ Admin (`role` admin/owner; every mutation is recorded in the audit log):
 - Post-processing: `POST /admin/postprocess/map-match {sampleIds?}` — snaps video tracks to the road network via OSRM (managed instance first, `OSRM_URL` fallback), downsampled ≤ 100 points; annotation coords recomputed on the matched geometry into `corrected_lat/lng` (`correction_source='osrm'`); originals untouched.
 - OSRM manager (run OSRM entirely from the hosted platform):
   `GET /admin/osrm/status` (runner: `binaries` on PATH → `docker` → `unavailable`; download/preprocess/serve progress), `POST /admin/osrm/download {url}` (https-only .osm.pbf — use a regional Geofabrik extract; 409 while busy), `POST /admin/osrm/preprocess` (extract → partition → customize, MLD; async 202, poll status; `501 OSRM_RUNNER_UNAVAILABLE` with guidance when neither binaries nor docker exist), `POST /admin/osrm/serve` / `POST /admin/osrm/stop` (osrm-routed on `OSRM_PORT`, managed URL `http://127.0.0.1:5001`). State is in-memory — after an API restart status simply reports not-running (files on disk are still detected).
-- Model OTA: `POST /admin/models` (multipart `.tflite` + notes; server-side sha256; stored via the driver at `models/<version>.tflite`; new release auto-activates, single active), `GET /admin/models`, `POST /admin/models/:id/activate`. Collector side: `GET /models/latest` → `{version, sha256, sizeBytes, notes, url}` (404 `NO_MODEL`), `GET /models/latest/file` streams the model.
+- Model OTA: `POST /admin/models` (multipart `.tflite` + notes + `kind` — `road-binary` default | `ssd-coco`; server-side sha256; stored via the driver at `models/<version>.tflite`; new release auto-activates, single active), `GET /admin/models`, `POST /admin/models/:id/activate`. Collector side: `GET /models/latest` → `{version, kind, sha256, sizeBytes, notes, url}` (404 `NO_MODEL`), `GET /models/latest/file` streams the model. `scripts/prepare_ssdlite.sh` builds the Apache-2.0 `ssd-coco` avoid-object model (people/vehicles/animals — not potholes) from the TF model zoo.
 - Road quality: `GET /admin/road-quality` — geohash-7 (~150 m) cells from accepted/partial annotations (corrected coords preferred). `severityIndex = min(100, annotations×12 + clusters×10)`.
 
 Exports:

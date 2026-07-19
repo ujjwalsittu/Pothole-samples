@@ -3,7 +3,7 @@ import type { DashboardStats } from '@pothole/shared';
 import { query } from '../db/pool';
 import { asyncH, ok } from '../http';
 import { requireUser } from '../middleware/auth';
-import { balanceSummary } from '../services/ledger';
+import { ZERO_BALANCE, balanceSummary } from '../services/ledger';
 
 export const dashboardRouter = Router();
 
@@ -35,15 +35,20 @@ dashboardRouter.get(
          FROM samples WHERE user_id = $1`,
         [user.id],
       ),
-      query<{ video_quota: number; photo_quota: number; payout_inr: number }>(
-        'SELECT video_quota, photo_quota, payout_inr FROM packages WHERE code = $1',
+      query<{
+        video_quota: number;
+        photo_quota: number;
+        video_payout_inr: number;
+        photo_payout_inr: number;
+      }>(
+        'SELECT video_quota, photo_quota, video_payout_inr, photo_payout_inr FROM packages WHERE code = $1',
         [user.packageCode],
       ),
-      balanceSummary((t, p) => query(t, p), user.id),
+      user.isCollector ? balanceSummary((t, p) => query(t, p), user.id) : Promise.resolve(ZERO_BALANCE),
     ]);
 
     const c = counts.rows[0];
-    const p = pkg.rows[0] ?? { video_quota: 0, photo_quota: 0, payout_inr: 0 };
+    const p = pkg.rows[0] ?? { video_quota: 0, photo_quota: 0, video_payout_inr: 0, photo_payout_inr: 0 };
 
     const stats: DashboardStats = {
       totalSamples: Number(c.total),
@@ -58,10 +63,14 @@ dashboardRouter.get(
         photoQuota: Number(p.photo_quota),
         videosDone: Number(c.videos_accepted),
         photosDone: Number(c.photos_accepted),
-        payoutInr: Number(p.payout_inr),
+        videoPayoutInr: user.isCollector ? Number(p.video_payout_inr) : 0,
+        photoPayoutInr: user.isCollector ? Number(p.photo_payout_inr) : 0,
       },
+      // All money fields are zero for non-collectors.
       earnedInr: money.earnedInr,
       settledInr: money.settledInr,
+      activeInr: money.activeInr,
+      upcomingInr: money.upcomingInr,
       balanceInr: money.balanceInr,
     };
     ok(res, stats);

@@ -10,6 +10,7 @@ import type {
   Settlement,
   SettlementConfirmState,
   User,
+  WithdrawalRequest,
 } from '@pothole/shared';
 
 type Row = Record<string, any>;
@@ -27,6 +28,15 @@ export function rowToUser(r: Row): User {
     photoUrl: r.photo_url ?? null,
     role: r.role,
     collectorStatus: r.collector_status,
+    isCollector: Boolean(r.is_collector),
+    organization: r.organization ?? null,
+    mobile: r.mobile ?? null,
+    whatsappAvailable: Boolean(r.whatsapp_available),
+    signupLocation:
+      r.signup_lat == null || r.signup_lng == null
+        ? null
+        : { lat: Number(r.signup_lat), lng: Number(r.signup_lng), acc: num(r.signup_acc) },
+    deviceFingerprint: r.device_fingerprint ?? null,
     upiId: r.upi_id ?? null,
     accountState: r.account_state,
     packageCode: r.package_code,
@@ -91,6 +101,7 @@ export function rowToLedgerEntry(r: Row): LedgerEntry & { settled: boolean; sett
     userId: r.user_id,
     type: r.type,
     amountInr: num(r.amount_inr),
+    earningState: r.earning_state ?? null,
     sampleId: r.sample_id ?? null,
     settlementId: r.settlement_id ?? null,
     note: r.note ?? null,
@@ -132,10 +143,26 @@ export function rowToPackage(r: Row): PackageInfo {
     code: r.code,
     name: r.name,
     videoQuota: num(r.video_quota),
+    videoPayoutInr: num(r.video_payout_inr),
     photoQuota: num(r.photo_quota),
-    payoutInr: num(r.payout_inr),
+    photoPayoutInr: num(r.photo_payout_inr),
     active: r.active == null ? true : Boolean(r.active),
     nextPackageCode: r.next_package_code ?? null,
+  };
+}
+
+export function rowToWithdrawal(r: Row): WithdrawalRequest {
+  return {
+    id: r.id,
+    userId: r.user_id,
+    amountInr: num(r.amount_inr),
+    upiId: r.upi_id,
+    state: r.state,
+    note: r.note ?? null,
+    decidedBy: r.decided_by ?? null,
+    decidedAt: iso(r.decided_at),
+    settlementId: r.settlement_id ?? null,
+    createdAt: iso(r.created_at) as string,
   };
 }
 
@@ -161,6 +188,7 @@ export function rowToModelRelease(r: Row): ModelRelease {
     sha256: r.sha256,
     sizeBytes: num(r.size_bytes),
     notes: r.notes ?? null,
+    kind: r.kind ?? 'road-binary',
     active: Boolean(r.active),
     uploadedBy: r.uploaded_by ?? '',
     createdAt: iso(r.created_at) as string,

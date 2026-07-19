@@ -48,7 +48,7 @@ export const mail = {
       layout(
         'Thanks for signing up!',
         `<p>Hi ${fullName},</p>
-         <p>Your account is <b>awaiting approval</b>. We will email you as soon as an admin reviews it — you can then start collecting pothole samples.</p>`,
+         <p>Thanks for joining our pothole submission platform. Your account is <b>awaiting approval</b> — we will email you as soon as an admin reviews it, and you can then start submitting pothole reports.</p>`,
       ),
     ),
 
@@ -70,7 +70,7 @@ export const mail = {
       layout(
         'Your account is approved',
         `<p>Hi ${fullName},</p>
-         <p>Your account has been <b>approved</b>. Open the app and start collecting pothole photos and videos to earn.</p>`,
+         <p>Your account has been <b>approved</b>. Open the app and start submitting pothole photos and videos — every report helps map and fix our roads.</p>`,
       ),
     ),
 
@@ -86,25 +86,94 @@ export const mail = {
       ),
     ),
 
-  sampleAccepted: (to: string, fullName: string, sampleId: string, amountInr: number) =>
+  /** amountInr null = non-collector (voluntary submission, no money copy). */
+  sampleAccepted: (to: string, fullName: string, sampleId: string, amountInr: number | null) =>
     send(
       to,
-      `${APP_NAME}: sample accepted — ₹${amountInr} credited`,
+      amountInr == null
+        ? `${APP_NAME}: submission accepted`
+        : `${APP_NAME}: sample accepted — ₹${amountInr} added`,
       layout(
-        'Sample accepted',
-        `<p>Hi ${fullName},</p>
-         <p>Your sample <code>${sampleId}</code> was <b>accepted</b> and <b>₹${amountInr}</b> has been credited to your balance.</p>`,
+        amountInr == null ? 'Submission accepted' : 'Sample accepted',
+        amountInr == null
+          ? `<p>Hi ${fullName},</p>
+             <p>Your pothole submission <code>${sampleId}</code> was <b>accepted</b> — thank you for helping map and fix our roads!</p>`
+          : `<p>Hi ${fullName},</p>
+             <p>Your sample <code>${sampleId}</code> was <b>accepted</b> and <b>₹${amountInr}</b> was added to your earnings. It unlocks for withdrawal when the track's quota completes.</p>`,
       ),
     ),
 
-  samplePartiallyAccepted: (to: string, fullName: string, sampleId: string, amountInr: number) =>
+  /** amountInr null = non-collector (voluntary submission, no money copy). */
+  samplePartiallyAccepted: (to: string, fullName: string, sampleId: string, amountInr: number | null) =>
     send(
       to,
-      `${APP_NAME}: sample accepted with adjustments — ₹${amountInr} credited`,
+      amountInr == null
+        ? `${APP_NAME}: submission accepted with adjustments`
+        : `${APP_NAME}: sample accepted with adjustments — ₹${amountInr} added`,
       layout(
-        'Sample accepted with adjustments',
+        'Accepted with adjustments',
+        amountInr == null
+          ? `<p>Hi ${fullName},</p>
+             <p>Your pothole submission <code>${sampleId}</code> was <b>accepted</b> after the reviewer adjusted some of its annotations — thank you for contributing!</p>`
+          : `<p>Hi ${fullName},</p>
+             <p>Your sample <code>${sampleId}</code> was <b>accepted</b> after the reviewer adjusted some of its annotations. <b>₹${amountInr}</b> was added to your earnings and unlocks when the track's quota completes.</p>`,
+      ),
+    ),
+
+  collectorDesignated: (to: string, fullName: string, planName: string) =>
+    send(
+      to,
+      `${APP_NAME}: you are now a collector`,
+      layout(
+        'Welcome aboard as a collector!',
         `<p>Hi ${fullName},</p>
-         <p>Your sample <code>${sampleId}</code> was <b>accepted</b> after the reviewer adjusted some of its annotations. <b>₹${amountInr}</b> has been credited to your balance.</p>`,
+         <p>You are now a <b>collector</b> on the <b>${planName}</b> plan. Accepted photos and videos accrue earnings per sample; each media track's earnings unlock for withdrawal when you complete its quota.</p>`,
+      ),
+    ),
+
+  withdrawalRequested: (collectorName: string, amountInr: number, upiId: string) =>
+    send(
+      config.adminEmail,
+      `${APP_NAME}: withdrawal request — ₹${amountInr}`,
+      layout(
+        'New withdrawal request',
+        `<p><b>${collectorName}</b> requested a withdrawal of <b>₹${amountInr}</b> to UPI <code>${upiId}</code>.</p>
+         <p>Review it in the admin console.</p>`,
+      ),
+    ),
+
+  withdrawalApproved: (to: string, fullName: string, amountInr: number) =>
+    send(
+      to,
+      `${APP_NAME}: withdrawal approved`,
+      layout(
+        'Withdrawal approved',
+        `<p>Hi ${fullName},</p>
+         <p>Your withdrawal of <b>₹${amountInr}</b> was approved and the payout is being processed.</p>`,
+      ),
+    ),
+
+  withdrawalRejected: (to: string, fullName: string, amountInr: number, note: string) =>
+    send(
+      to,
+      `${APP_NAME}: withdrawal update`,
+      layout(
+        'Withdrawal rejected',
+        `<p>Hi ${fullName},</p>
+         <p>Your withdrawal request of <b>₹${amountInr}</b> was rejected.</p>
+         <p><b>Note:</b> ${note || 'Not specified'}</p>`,
+      ),
+    ),
+
+  withdrawalPaid: (to: string, fullName: string, amountInr: number, utr: string | null) =>
+    send(
+      to,
+      `${APP_NAME}: ₹${amountInr} paid`,
+      layout(
+        'Withdrawal paid',
+        `<p>Hi ${fullName},</p>
+         <p>Your withdrawal of <b>₹${amountInr}</b> has been paid to your UPI.</p>
+         ${utr ? `<p><b>UTR reference:</b> ${utr}</p>` : ''}`,
       ),
     ),
 
