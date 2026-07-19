@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import type { LedgerEntry, User } from '@pothole/shared';
 import { SETTLEMENT_CONFIRM_THRESHOLD_INR } from '@pothole/shared';
+import { WithdrawalsSection } from './Withdrawals';
 import type { BalanceInfo, SettlementRow } from '../api/client';
 import {
   cancelSettlement,
@@ -32,6 +34,37 @@ interface UserWithBalance extends User {
 }
 
 export function SettlementsPage() {
+  const [params, setParams] = useSearchParams();
+  const view = params.get('tab') === 'withdrawals' ? 'withdrawals' : 'settlements';
+  const setView = (v: 'settlements' | 'withdrawals') => {
+    const next = new URLSearchParams(params);
+    if (v === 'withdrawals') next.set('tab', 'withdrawals');
+    else next.delete('tab');
+    setParams(next, { replace: true });
+  };
+
+  return (
+    <div className="stack">
+      <div className="tabs">
+        <button
+          className={`tab${view === 'settlements' ? ' active' : ''}`}
+          onClick={() => setView('settlements')}
+        >
+          Balances & settlements
+        </button>
+        <button
+          className={`tab${view === 'withdrawals' ? ' active' : ''}`}
+          onClick={() => setView('withdrawals')}
+        >
+          Withdrawal requests
+        </button>
+      </div>
+      {view === 'withdrawals' ? <WithdrawalsSection /> : <SettlementsSection />}
+    </div>
+  );
+}
+
+function SettlementsSection() {
   const { me } = useMe();
   const [users, setUsers] = useState<UserWithBalance[] | null>(null);
   const [usersErr, setUsersErr] = useState<string | null>(null);
@@ -48,13 +81,15 @@ export function SettlementsPage() {
     setUsersErr(null);
     (async () => {
       const approved = await listUsers('approved');
+      // Only paid collectors accrue balances (tolerate rows missing the flag).
+      const collectors = approved.filter((u) => u.isCollector !== false);
       const withBalances: UserWithBalance[] = await Promise.all(
-        approved.map(async (u) => ({
+        collectors.map(async (u) => ({
           ...u,
           balance: await getUserBalance(u.id).catch(() => null),
         })),
       );
-      withBalances.sort((a, b) => (b.balance?.balanceInr ?? 0) - (a.balance?.balanceInr ?? 0));
+      withBalances.sort((a, b) => (b.balance?.activeInr ?? 0) - (a.balance?.activeInr ?? 0));
       return withBalances;
     })()
       .then((u) => {
@@ -162,7 +197,8 @@ export function SettlementsPage() {
                   <th>UPI ID</th>
                   <th>Earned</th>
                   <th>Settled</th>
-                  <th>Balance</th>
+                  <th>Active (settleable)</th>
+                  <th>Upcoming</th>
                   <th>Actions</th>
                 </tr>
               </thead>
@@ -180,20 +216,23 @@ export function SettlementsPage() {
                     <td>{u.balance ? formatInr(u.balance.earnedInr) : '—'}</td>
                     <td>{u.balance ? formatInr(u.balance.settledInr) : '—'}</td>
                     <td>
-                      <strong className={u.balance && u.balance.balanceInr > 0 ? 'accent-text' : ''}>
-                        {u.balance ? formatInr(u.balance.balanceInr) : '—'}
+                      <strong className={u.balance && u.balance.activeInr > 0 ? 'accent-text' : ''}>
+                        {u.balance ? formatInr(u.balance.activeInr) : '—'}
                       </strong>
+                    </td>
+                    <td className="muted" title="Accrued on incomplete tracks — not yet withdrawable">
+                      {u.balance ? formatInr(u.balance.upcomingInr) : '—'}
                     </td>
                     <td>
                       <span className="row gap">
                         <button
                           className="btn btn-sm btn-primary"
-                          disabled={!u.balance || u.balance.balanceInr <= 0}
+                          disabled={!u.balance || u.balance.activeInr <= 0}
                           title={
                             !u.balance
                               ? 'Balance unavailable'
-                              : u.balance.balanceInr <= 0
-                                ? 'Nothing to settle'
+                              : u.balance.activeInr <= 0
+                                ? 'No active (completed-track) balance to settle'
                                 : undefined
                           }
                           onClick={() => setSettleTarget(u)}
@@ -387,7 +426,9 @@ function SettleModal({
   onClose: () => void;
   onDone: () => void;
 }) {
-  const balance = user.balance?.balanceInr ?? 0;
+  // Only ACTIVE balance (completed tracks) is settleable — upcoming accruals are not.
+  const balance = user.balance?.activeInr ?? 0;
+  const upcoming = user.balance?.upcomingInr ?? 0;
   const [amount, setAmount] = useState<string>(String(balance));
   const [utr, setUtr] = useState('');
   const [proof, setProof] = useState<File | null>(null);
@@ -424,10 +465,18 @@ function SettleModal({
           <strong className="mono">{user.upiId || '— missing —'}</strong>
         </div>
         <div>
-          <span className="muted small">Payable balance</span>
+          <span className="muted small">Active (settleable)</span>
           <strong>{formatInr(balance)}</strong>
         </div>
+        <div>
+          <span className="muted small">Upcoming (locked)</span>
+          <strong className="muted">{formatInr(upcoming)}</strong>
+        </div>
       </div>
+      <p className="muted small">
+        Settlements are capped at the <strong>active</strong> balance — earnings on incomplete tracks
+        stay “upcoming” until the track's full quota completes and cannot be paid out.
+      </p>
       <label className="field">
         <span>Amount (₹)</span>
         <input
@@ -439,7 +488,7 @@ function SettleModal({
           onChange={(e) => setAmount(e.target.value)}
         />
         {Number.isFinite(amountNum) && amountNum > balance ? (
-          <span className="error-text small">Cannot exceed the payable balance.</span>
+          <span className="error-text small">Cannot exceed the active (settleable) balance.</span>
         ) : null}
       </label>
       <label className="field">

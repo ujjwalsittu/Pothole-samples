@@ -735,6 +735,15 @@ tr.top-rank { background: rgba(245, 158, 11, 0.05); }
 .progress-bar { display: block; }
 .progress-fill { display: block; }
 
+/* ---------------- user detail drawer ---------------- */
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px 20px;
+}
+.detail-grid > div { display: flex; flex-direction: column; gap: 2px; }
+
 /* ---------------- services (OSRM + models) ---------------- */
 
 .osrm-steps { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; }

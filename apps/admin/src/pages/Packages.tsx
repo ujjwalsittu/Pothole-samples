@@ -32,8 +32,10 @@ export function PackagesPage() {
     <div className="stack">
       <div className="row between wrap gap">
         <p className="muted small">
-          Earnings packages — collectors complete either quota to earn the payout; a package can chain
-          into a next one on completion.
+          Collector plans — each media track pays <strong>independently and only on FULL completion</strong>:
+          finishing the video quota activates the video payout, finishing the photo quota activates the
+          photo payout. Partial progress activates nothing (quota−1 photos pays ₹0). Auto-enroll into the
+          next package happens once <strong>both tracks</strong> complete.
         </p>
         <button className="btn btn-primary" onClick={() => setEditing('new')}>
           + New package
@@ -54,9 +56,8 @@ export function PackagesPage() {
                 <tr>
                   <th>Code</th>
                   <th>Name</th>
-                  <th>Video quota</th>
-                  <th>Photo quota</th>
-                  <th>Payout</th>
+                  <th>Video track</th>
+                  <th>Photo track</th>
                   <th>Next package</th>
                   <th>Status</th>
                   <th></th>
@@ -69,10 +70,11 @@ export function PackagesPage() {
                     <td>
                       <strong>{p.name}</strong>
                     </td>
-                    <td>{p.videoQuota} videos</td>
-                    <td>{p.photoQuota} photos</td>
                     <td>
-                      <strong className="accent-text">{formatInr(p.payoutInr)}</strong>
+                      {p.videoQuota} videos → <strong className="accent-text">{formatInr(p.videoPayoutInr)}</strong>
+                    </td>
+                    <td>
+                      {p.photoQuota} photos → <strong className="accent-text">{formatInr(p.photoPayoutInr)}</strong>
                     </td>
                     <td className="mono small">{p.nextPackageCode || <span className="muted">— stop —</span>}</td>
                     <td>
@@ -120,23 +122,24 @@ function PackageForm({
   const [code, setCode] = useState(pkg?.code ?? '');
   const [name, setName] = useState(pkg?.name ?? '');
   const [videoQuota, setVideoQuota] = useState(String(pkg?.videoQuota ?? 10));
+  const [videoPayoutInr, setVideoPayoutInr] = useState(String(pkg?.videoPayoutInr ?? 1000));
   const [photoQuota, setPhotoQuota] = useState(String(pkg?.photoQuota ?? 20));
-  const [payoutInr, setPayoutInr] = useState(String(pkg?.payoutInr ?? 1000));
+  const [photoPayoutInr, setPhotoPayoutInr] = useState(String(pkg?.photoPayoutInr ?? 1000));
   const [active, setActive] = useState(pkg?.active ?? true);
   const [nextPackageCode, setNextPackageCode] = useState(pkg?.nextPackageCode ?? '');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const nums = { videoQuota: Number(videoQuota), photoQuota: Number(photoQuota), payoutInr: Number(payoutInr) };
+  const nums = {
+    videoQuota: Number(videoQuota),
+    videoPayoutInr: Number(videoPayoutInr),
+    photoQuota: Number(photoQuota),
+    photoPayoutInr: Number(photoPayoutInr),
+  };
   const valid =
     code.trim().length > 0 &&
     name.trim().length > 0 &&
-    Number.isFinite(nums.videoQuota) &&
-    nums.videoQuota >= 0 &&
-    Number.isFinite(nums.photoQuota) &&
-    nums.photoQuota >= 0 &&
-    Number.isFinite(nums.payoutInr) &&
-    nums.payoutInr > 0;
+    Object.values(nums).every((n) => Number.isFinite(n) && n >= 0);
 
   const save = async () => {
     if (!valid) return;
@@ -146,8 +149,9 @@ function PackageForm({
       code: code.trim().toUpperCase(),
       name: name.trim(),
       videoQuota: nums.videoQuota,
+      videoPayoutInr: nums.videoPayoutInr,
       photoQuota: nums.photoQuota,
-      payoutInr: nums.payoutInr,
+      photoPayoutInr: nums.photoPayoutInr,
       active,
       nextPackageCode: nextPackageCode || null,
     };
@@ -164,6 +168,10 @@ function PackageForm({
 
   return (
     <Modal title={pkg ? `Edit ${pkg.code}` : 'New package'} onClose={onClose}>
+      <p className="muted small">
+        Each track pays independently and <strong>only on full completion</strong> — an incomplete track
+        earns ₹0. Auto-enroll into the next package happens when both tracks complete.
+      </p>
       <div className="form-grid">
         <label className="field">
           <span>Code</span>
@@ -179,16 +187,30 @@ function PackageForm({
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Pro Package" />
         </label>
         <label className="field">
-          <span>Video quota</span>
+          <span>Video quota (per track)</span>
           <input type="number" min={0} value={videoQuota} onChange={(e) => setVideoQuota(e.target.value)} />
         </label>
         <label className="field">
-          <span>Photo quota</span>
+          <span>Video payout ₹ (per completed track)</span>
+          <input
+            type="number"
+            min={0}
+            value={videoPayoutInr}
+            onChange={(e) => setVideoPayoutInr(e.target.value)}
+          />
+        </label>
+        <label className="field">
+          <span>Photo quota (per track)</span>
           <input type="number" min={0} value={photoQuota} onChange={(e) => setPhotoQuota(e.target.value)} />
         </label>
         <label className="field">
-          <span>Payout (₹)</span>
-          <input type="number" min={1} value={payoutInr} onChange={(e) => setPayoutInr(e.target.value)} />
+          <span>Photo payout ₹ (per completed track)</span>
+          <input
+            type="number"
+            min={0}
+            value={photoPayoutInr}
+            onChange={(e) => setPhotoPayoutInr(e.target.value)}
+          />
         </label>
         <label className="field">
           <span>Next package (on completion)</span>

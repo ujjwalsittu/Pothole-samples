@@ -19,6 +19,8 @@ import type {
   Settlement,
   SettlementConfirmState,
   User,
+  WithdrawalRequest,
+  WithdrawalState,
 } from '@pothole/shared';
 
 /* ------------------------------------------------------------------ */
@@ -156,6 +158,10 @@ export interface BalanceInfo {
   earnedInr: number;
   settledInr: number;
   balanceInr: number;
+  /** Withdrawable now (completed tracks minus settlements). */
+  activeInr: number;
+  /** Accrued on incomplete tracks — not yet withdrawable. */
+  upcomingInr: number;
 }
 
 export type SettlementRow = Settlement & {
@@ -194,6 +200,8 @@ function asArray(data: unknown): any[] {
       'cells',
       'leaderboard',
       'audit',
+      'withdrawals',
+      'models',
     ]) {
       if (Array.isArray(obj[key])) return obj[key] as any[];
     }
@@ -210,10 +218,14 @@ function normalizeBalance(data: unknown): BalanceInfo {
     }
     return 0;
   };
+  const balanceInr = num('balanceInr', 'balance', 'payableInr');
   return {
     earnedInr: num('earnedInr', 'earned', 'totalEarnedInr'),
     settledInr: num('settledInr', 'settled', 'totalSettledInr'),
-    balanceInr: num('balanceInr', 'balance', 'payableInr'),
+    balanceInr,
+    // Older API shapes have no active/upcoming split — treat the whole balance as active.
+    activeInr: 'activeInr' in obj ? num('activeInr') : balanceInr,
+    upcomingInr: num('upcomingInr'),
   };
 }
 
@@ -279,7 +291,7 @@ export function rejectUser(id: string, reason: string): Promise<unknown> {
 
 export function patchUser(
   id: string,
-  patch: { collectorStatus?: string; role?: string; packageCode?: string },
+  patch: { collectorStatus?: string; role?: string; packageCode?: string; isCollector?: boolean },
 ): Promise<unknown> {
   return request(`/api/v1/admin/users/${id}`, jsonInit('PATCH', patch));
 }
@@ -511,12 +523,14 @@ export interface UploadProgress {
 export async function uploadModel(
   file: File,
   notes: string,
+  kind: 'road-binary' | 'ssd-coco',
   onProgress?: (p: UploadProgress) => void,
 ): Promise<unknown> {
   const headers = await authHeaders();
   const form = new FormData();
   form.append('file', file, file.name);
   form.append('notes', notes);
+  form.append('kind', kind);
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', `${API_URL}/api/v1/admin/models`);
@@ -551,8 +565,9 @@ export interface PackageBody {
   code: string;
   name: string;
   videoQuota: number;
+  videoPayoutInr: number;
   photoQuota: number;
-  payoutInr: number;
+  photoPayoutInr: number;
   active: boolean;
   nextPackageCode: string | null;
 }
@@ -560,6 +575,28 @@ export interface PackageBody {
 export async function listPackages(): Promise<PackageInfo[]> {
   const data = await request<unknown>('/api/v1/admin/packages');
   return asArray(data) as PackageInfo[];
+}
+
+/* ---------------- withdrawals ---------------- */
+
+export type WithdrawalRow = WithdrawalRequest & {
+  user?: Partial<User> | null;
+  userName?: string;
+  userEmail?: string;
+  decidedByName?: string | null;
+};
+
+export async function listWithdrawals(state: WithdrawalState): Promise<WithdrawalRow[]> {
+  const data = await request<unknown>(`/api/v1/admin/withdrawals?state=${state}`);
+  return asArray(data) as WithdrawalRow[];
+}
+
+export function approveWithdrawal(id: string): Promise<unknown> {
+  return request(`/api/v1/admin/withdrawals/${id}/approve`, jsonInit('POST', {}));
+}
+
+export function rejectWithdrawal(id: string, note: string): Promise<unknown> {
+  return request(`/api/v1/admin/withdrawals/${id}/reject`, jsonInit('POST', { note }));
 }
 
 export function createPackage(body: PackageBody): Promise<unknown> {

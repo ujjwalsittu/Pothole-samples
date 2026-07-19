@@ -12,6 +12,7 @@ import {
   hasMockedFix,
   trackSpeedsKmph,
 } from '@pothole/shared';
+import type { PackageInfo } from '@pothole/shared';
 import type { ReviewDecision, SampleDetail } from '../api/client';
 import {
   createAnnotation,
@@ -19,6 +20,7 @@ import {
   errorMessage,
   fetchMediaBlob,
   getSampleDetail,
+  listPackages,
   patchAnnotation,
   reviewSample,
   sampleUserLabel,
@@ -52,10 +54,33 @@ const REJECT_REASONS = [
 /** How close (seconds) an annotation's videoTimeSec must be to the playhead to show on the frame. */
 const VIDEO_ANNOTATION_WINDOW_SEC = 1;
 
-/** ₹ credited when a sample is accepted: package payout split across the quota. */
-export function creditForSample(mediaType: 'photo' | 'video'): number {
-  const quota = mediaType === 'video' ? DEFAULT_PACKAGE.videoQuota : DEFAULT_PACKAGE.photoQuota;
-  return Math.round((DEFAULT_PACKAGE.payoutInr / quota) * 100) / 100;
+interface TrackRates {
+  videoQuota: number;
+  videoPayoutInr: number;
+  photoQuota: number;
+  photoPayoutInr: number;
+}
+
+/**
+ * ₹ credited toward the sample's media track when accepted: the track's
+ * payout split across its quota (each track pays independently).
+ */
+export function creditForSample(mediaType: 'photo' | 'video', rates: TrackRates = DEFAULT_PACKAGE): number {
+  const payout = mediaType === 'video' ? rates.videoPayoutInr : rates.photoPayoutInr;
+  const quota = mediaType === 'video' ? rates.videoQuota : rates.photoQuota;
+  return quota > 0 ? Math.round((payout / quota) * 100) / 100 : 0;
+}
+
+/** Session-cached package list for per-user credit previews (tolerant of failures). */
+let packagesPromise: Promise<PackageInfo[]> | null = null;
+function cachedPackages(): Promise<PackageInfo[]> {
+  if (!packagesPromise) {
+    packagesPromise = listPackages().catch(() => {
+      packagesPromise = null;
+      return [] as PackageInfo[];
+    });
+  }
+  return packagesPromise;
 }
 
 interface ChecklistItem {
@@ -98,6 +123,17 @@ export function SampleDetailPanel({
   const [rejectText, setRejectText] = useState('');
   const [submitting, setSubmitting] = useState<ReviewDecision | null>(null);
   const [submitErr, setSubmitErr] = useState<string | null>(null);
+  const [packages, setPackages] = useState<PackageInfo[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void cachedPackages().then((p) => {
+      if (!cancelled) setPackages(p);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   /* ---------------- load detail + media ---------------- */
 
@@ -405,7 +441,11 @@ export function SampleDetailPanel({
           .filter((m): m is MapMarker => m !== null)
       : [];
 
-  const credit = creditForSample(sample.mediaType);
+  // Contributors (non-collectors) are never paid — only show ₹ for collectors.
+  const isPaidCollector = sample.user?.isCollector !== false;
+  const userPkg = packages.find((p) => p.code === sample.user?.packageCode);
+  const credit = creditForSample(sample.mediaType, userPkg ?? DEFAULT_PACKAGE);
+  const creditSuffix = isPaidCollector ? ` — credit ${formatInr(credit)}` : '';
   const manualAllChecked = manualItems.every((m) => manualChecks[m.key]);
   const acceptedCount = anns.filter((a) => a.status === 'accepted').length;
   const rejectedCount = anns.filter((a) => a.status === 'rejected').length;
@@ -755,7 +795,7 @@ export function SampleDetailPanel({
               }
               onClick={() => void decide('accepted')}
             >
-              {submitting === 'accepted' ? 'Accepting…' : `Accept all — credit ${formatInr(credit)}`}
+              {submitting === 'accepted' ? 'Accepting…' : `Accept all${creditSuffix}`}
             </button>
             <button
               className="btn btn-teal"
@@ -767,9 +807,7 @@ export function SampleDetailPanel({
               }
               onClick={() => void decide('partially_accepted')}
             >
-              {submitting === 'partially_accepted'
-                ? 'Accepting…'
-                : `Partially accept — credit ${formatInr(credit)}`}
+              {submitting === 'partially_accepted' ? 'Accepting…' : `Partially accept${creditSuffix}`}
             </button>
             <button
               className="btn btn-danger"
@@ -778,6 +816,7 @@ export function SampleDetailPanel({
             >
               Reject…
             </button>
+            {!isPaidCollector ? <span className="chip chip-neutral">contributor — no payment</span> : null}
             {!manualAllChecked ? (
               <span className="muted small">Manual content checklist incomplete</span>
             ) : null}

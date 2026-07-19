@@ -62,6 +62,20 @@ Powered by Threemates Tech Ventures · v1.0.0
   sample/annotation counts, train/val/test split badges, label counts),
   manifest.json downloads, training/raw bundle downloads and the OSRM
   map-matching trigger (graceful NOT_CONFIGURED notice).
+- **Collector designation & signup vetting** — user rows/detail drawer show
+  occupation (student/professional/self-employed) with organization, mobile
+  (+WhatsApp badge), signup location (map link) and a device-fingerprint JSON
+  expander; a prominent Make/Revoke-collector flow (confirm modal with plan
+  dropdown) sets `isCollector` + package together. Non-collectors appear as
+  "contributor" and their samples show no ₹ in review.
+- **Withdrawals** — a Settlements tab with the requested queue (UPI, active-
+  balance coverage check), approve (runs the settlement flow, honoring the
+  ₹5000 second-admin threshold) or reject-with-note, plus per-state history
+  linking through to settlement proofs.
+- **Per-track payouts** — packages define independent video and photo tracks
+  (quota + payout each, paid only on full completion); credit previews in the
+  review panel use the sample owner's plan; balances split Active (settleable)
+  vs Upcoming (locked until a track completes) and settlements cap at Active.
 - **Settlements two-admin flow** — settlements ≥ ₹5000 wait for a second
   admin's confirmation; the initiator's Confirm button is disabled with an
   explanatory tooltip, and history shows who confirmed.

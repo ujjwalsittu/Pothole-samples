@@ -76,7 +76,15 @@ export function LeaderboardPage() {
                       <strong>{e.displayName}</strong> {e.isMe ? <Chip tone="accent">you</Chip> : null}
                     </td>
                     <td>{e.acceptedSamples}</td>
-                    <td>{formatInr(e.earnedInr)}</td>
+                    <td>
+                      {e.earnedInr > 0 ? (
+                        formatInr(e.earnedInr)
+                      ) : (
+                        <span className="muted" title="Contributor (not a paid collector) or no active earnings">
+                          —
+                        </span>
+                      )}
+                    </td>
                     <td>
                       {e.streakDays > 0 ? (
                         <Chip tone={e.streakDays >= 7 ? 'accent' : 'neutral'}>🔥 {e.streakDays}d</Chip>

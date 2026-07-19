@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ModelRelease, OsrmStatus } from '@pothole/shared';
+import type { ModelKind, ModelRelease, OsrmStatus } from '@pothole/shared';
 import type { UploadProgress } from '../api/client';
 import {
   activateModel,
@@ -323,6 +323,7 @@ function ModelsPanel() {
 
   const [file, setFile] = useState<File | null>(null);
   const [notes, setNotes] = useState('');
+  const [kind, setKind] = useState<ModelKind>('road-binary');
   const [uploading, setUploading] = useState(false);
   const [uploadPct, setUploadPct] = useState<UploadProgress | null>(null);
   const [uploadErr, setUploadErr] = useState<string | null>(null);
@@ -360,7 +361,7 @@ function ModelsPanel() {
     setUploadErr(null);
     setUploadPct(null);
     try {
-      await uploadModel(file, notes.trim(), setUploadPct);
+      await uploadModel(file, notes.trim(), kind, setUploadPct);
       setFile(null);
       setNotes('');
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -399,14 +400,20 @@ function ModelsPanel() {
         </span>
       </div>
       <p className="muted small">
-        The <strong>active</strong> release is fetched by the mobile app automatically (OTA) on launch.
-        Expected TFLite contract: input <span className="mono">[1, 224, 224, 3]</span> u8 → output{' '}
-        <span className="mono">[roadProb, potholeProb]</span>.
+        The <strong>active</strong> release of each kind is fetched by the mobile app automatically (OTA)
+        on launch.
       </p>
 
       {/* upload */}
       <div className="upload-box">
         <div className="row gap wrap">
+          <label className="field inline">
+            <span>Kind</span>
+            <select value={kind} disabled={uploading} onChange={(e) => setKind(e.target.value as ModelKind)}>
+              <option value="road-binary">road-binary</option>
+              <option value="ssd-coco">ssd-coco</option>
+            </select>
+          </label>
           <input
             ref={fileInputRef}
             type="file"
@@ -426,6 +433,12 @@ function ModelsPanel() {
             {uploading ? 'Uploading…' : '⇧ Upload release'}
           </button>
         </div>
+        <p className="muted small">
+          <span className="mono">road-binary</span>: pothole classifier —{' '}
+          <span className="mono">[1,224,224,3]</span> u8 → <span className="mono">[roadProb, potholeProb]</span>.{' '}
+          <span className="mono">ssd-coco</span>: prebuilt SSDLite-MobileNetV2 avoid-object guidance
+          (people/vehicles/animals/signs) — see <span className="mono">scripts/prepare_ssdlite</span>.
+        </p>
         {file && !uploading ? (
           <span className="muted small">
             {file.name} ({fmtBytes(file.size)})
@@ -461,6 +474,7 @@ function ModelsPanel() {
             <thead>
               <tr>
                 <th>Version</th>
+                <th>Kind</th>
                 <th>File</th>
                 <th>Size</th>
                 <th>sha256</th>
@@ -474,6 +488,9 @@ function ModelsPanel() {
                 <tr key={m.id} className={m.active ? 'selected' : ''}>
                   <td>
                     <strong>v{m.version}</strong>
+                  </td>
+                  <td>
+                    <Chip tone={m.kind === 'ssd-coco' ? 'info' : 'accent'}>{m.kind}</Chip>
                   </td>
                   <td className="mono small">{m.filename}</td>
                   <td>{fmtBytes(m.sizeBytes)}</td>

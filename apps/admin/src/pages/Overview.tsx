@@ -10,6 +10,7 @@ import {
   listSamples,
   listSettlements,
   listUsers,
+  listWithdrawals,
   sampleUserLabel,
 } from '../api/client';
 import { Thumb } from '../components/Thumb';
@@ -25,6 +26,7 @@ interface OverviewData {
   totalPayable: number | null; // null → could not compute
   activeCampaigns: number | null;
   awaitingConfirmation: number | null;
+  pendingWithdrawals: number | null;
   datasetExports: number | null;
   recent: AdminSampleRow[];
 }
@@ -52,10 +54,11 @@ export function OverviewPage() {
         ]);
 
       // Newer feature endpoints — tolerate absence (null → "—").
-      const [campaigns, settlements, datasets] = await Promise.all([
+      const [campaigns, settlements, datasets, withdrawals] = await Promise.all([
         listCampaigns().catch(() => null as Campaign[] | null),
         listSettlements().catch(() => null as SettlementRow[] | null),
         listDatasets().catch(() => null),
+        listWithdrawals('requested').catch(() => null),
       ]);
 
       // Total payable balance: sum per-user balances (tolerant of failures).
@@ -86,6 +89,7 @@ export function OverviewPage() {
         awaitingConfirmation: settlements
           ? settlements.filter((s) => s.confirmState === 'awaiting_confirmation').length
           : null,
+        pendingWithdrawals: withdrawals ? withdrawals.length : null,
         datasetExports: datasets ? datasets.length : null,
         recent,
       } satisfies OverviewData;
@@ -140,6 +144,14 @@ export function OverviewPage() {
             value={data.activeCampaigns ?? '—'}
             tone="accent"
             hint={data.activeCampaigns != null ? 'boosted zones live' : 'endpoint unavailable'}
+          />
+        </Link>
+        <Link to="/settlements?tab=withdrawals" className="plain-link">
+          <StatCard
+            label="Pending withdrawals"
+            value={data.pendingWithdrawals ?? '—'}
+            tone={data.pendingWithdrawals ? 'warn' : undefined}
+            hint="collector requests to review"
           />
         </Link>
         <Link to="/settlements" className="plain-link">
