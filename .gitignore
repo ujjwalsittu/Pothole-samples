@@ -1,0 +1,23 @@
+# deps
+node_modules/
+.expo/
+dist/
+build/
+web-build/
+
+# env & secrets
+.env
+.env.*
+!.env.example
+google-service-account.json
+
+# logs / artifacts
+*.log
+coverage/
+uploads/
+*.tsbuildinfo
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,21 @@
+{
+  "name": "pothole-samples",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pothole data collection platform — powered by Threemates Tech Ventures",
+  "workspaces": [
+    "packages/*",
+    "apps/api",
+    "apps/admin"
+  ],
+  "scripts": {
+    "api": "npm run dev --workspace apps/api",
+    "admin": "npm run dev --workspace apps/admin",
+    "mobile": "cd apps/mobile && npm start",
+    "migrate": "npm run migrate --workspace apps/api",
+    "build": "npm run build --workspace apps/api && npm run build --workspace apps/admin"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
