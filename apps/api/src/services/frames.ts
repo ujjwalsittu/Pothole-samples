@@ -1,8 +1,13 @@
 /**
  * Video frame extraction + thumbnails (feature 2).
  *
- * Uses the system `ffmpeg` binary via child_process — no npm dependency.
- * When ffmpeg is missing everything degrades to a logged no-op.
+ * ffmpeg resolution order (first hit wins):
+ *   1. FFMPEG_PATH env — explicit binary path
+ *   2. `ffmpeg` on PATH — system install
+ *   3. the bundled `ffmpeg-static` binary — installed per-platform by npm
+ *      (Linux x64/arm64 glibc, macOS, Windows; Alpine/musl needs
+ *      `apk add ffmpeg` or FFMPEG_PATH instead)
+ * If none resolve, everything degrades to a logged no-op.
  *
  * Outputs (all promoted through the storage driver like other media):
  *  - thumbs/<sampleId>.jpg                poster (videos, t=1s) or 480px photo thumb
@@ -23,29 +28,56 @@ import {
   type StorageDriverName,
 } from './storage';
 
-let ffmpegAvailable: Promise<boolean> | undefined;
+let ffmpegBinary: Promise<string | null> | undefined;
 
-export function hasFfmpeg(): Promise<boolean> {
-  if (!ffmpegAvailable) {
-    ffmpegAvailable = new Promise((resolve) => {
-      try {
-        const p = spawn('ffmpeg', ['-version'], { stdio: 'ignore' });
-        p.on('error', () => {
-          console.warn('[frames] ffmpeg not found — frame extraction disabled');
-          resolve(false);
-        });
-        p.on('exit', (code) => resolve(code === 0));
-      } catch {
-        resolve(false);
-      }
-    });
-  }
-  return ffmpegAvailable;
+/** Probe a candidate binary by running `-version`. */
+function probe(bin: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    try {
+      const p = spawn(bin, ['-version'], { stdio: 'ignore' });
+      p.on('error', () => resolve(false));
+      p.on('exit', (code) => resolve(code === 0));
+    } catch {
+      resolve(false);
+    }
+  });
 }
 
-function runFfmpeg(args: string[]): Promise<void> {
+/** Resolve the ffmpeg binary path (env → system → bundled), cached. */
+export function resolveFfmpeg(): Promise<string | null> {
+  if (!ffmpegBinary) {
+    ffmpegBinary = (async () => {
+      const fromEnv = process.env.FFMPEG_PATH;
+      if (fromEnv && (await probe(fromEnv))) return fromEnv;
+      if (fromEnv) console.warn(`[frames] FFMPEG_PATH=${fromEnv} did not run — trying fallbacks`);
+      if (await probe('ffmpeg')) return 'ffmpeg';
+      try {
+        // Bundled per-platform binary; module resolves to its absolute path.
+        const mod = await import('ffmpeg-static');
+        const bundled = (mod.default ?? mod) as unknown as string | null;
+        if (bundled && (await probe(bundled))) {
+          console.log(`[frames] using bundled ffmpeg-static binary`);
+          return bundled;
+        }
+      } catch {
+        // optional dependency absent — fall through
+      }
+      console.warn('[frames] no working ffmpeg (env/system/bundled) — frame extraction disabled');
+      return null;
+    })();
+  }
+  return ffmpegBinary;
+}
+
+export async function hasFfmpeg(): Promise<boolean> {
+  return (await resolveFfmpeg()) !== null;
+}
+
+async function runFfmpeg(args: string[]): Promise<void> {
+  const bin = await resolveFfmpeg();
+  if (!bin) throw new Error('ffmpeg unavailable');
   return new Promise((resolve, reject) => {
-    const p = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    const p = spawn(bin, args, { stdio: ['ignore', 'ignore', 'pipe'] });
     let stderr = '';
     p.stderr.on('data', (d) => {
       stderr += String(d);

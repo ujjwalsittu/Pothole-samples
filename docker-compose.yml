@@ -16,5 +16,60 @@ services:
       timeout: 3s
       retries: 10
 
+  # Local S3 (MinIO). Start with: docker compose --profile s3 up -d
+  # Then in apps/api/.env:
+  #   STORAGE_DRIVER=s3
+  #   S3_BUCKET=pothole-samples
+  #   S3_REGION=us-east-1
+  #   S3_ENDPOINT=http://localhost:9000
+  #   AWS_ACCESS_KEY_ID=potholes
+  #   AWS_SECRET_ACCESS_KEY=potholes-secret
+  minio:
+    image: minio/minio:latest
+    container_name: pothole-minio
+    profiles: ["s3"]
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: potholes
+      MINIO_ROOT_PASSWORD: potholes-secret
+    ports:
+      - "9000:9000" # S3 API
+      - "9001:9001" # web console
+    volumes:
+      - pothole-minio:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One-shot: creates the bucket, then exits.
+  minio-init:
+    image: minio/mc:latest
+    profiles: ["s3"]
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 potholes potholes-secret &&
+      mc mb --ignore-existing local/pothole-samples &&
+      echo 'bucket ready'"
+
+  # OSRM map-matching backend. Needs a one-time data prep (see
+  # docs/SERVICES.md §3) that populates ./osrm-data with *.osrm files.
+  # Start with: docker compose --profile osrm up -d
+  # Then in apps/api/.env:  OSRM_URL=http://localhost:5000
+  osrm:
+    image: osrm/osrm-backend:latest
+    container_name: pothole-osrm
+    profiles: ["osrm"]
+    command: osrm-routed --algorithm mld /data/map.osrm
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./osrm-data:/data
+
 volumes:
   pothole-pgdata:
+  pothole-minio:

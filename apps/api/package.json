@@ -27,6 +27,9 @@
     "uuid": "^9.0.1",
     "zod": "^3.23.8"
   },
+  "optionalDependencies": {
+    "ffmpeg-static": "^5.2.0"
+  },
   "devDependencies": {
     "@types/archiver": "^6.0.2",
     "@types/cors": "^2.8.17",
