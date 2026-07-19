@@ -1,7 +1,18 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import type { PackageInfo, User } from '@pothole/shared';
-import { approveUser, errorMessage, listPackages, listUsers, patchUser, rejectUser } from '../api/client';
+import {
+  approveUser,
+  createInvite,
+  errorMessage,
+  listInvites,
+  listPackages,
+  listUsers,
+  patchUser,
+  rejectUser,
+  revokeInvite,
+  type AdminInvite,
+} from '../api/client';
 import {
   Avatar,
   Chip,
@@ -378,6 +389,8 @@ export function ApprovalsPage() {
       ) : null}
 
       {detailUser ? <UserDetailDrawer user={detailUser} onClose={() => setDetailUser(null)} /> : null}
+
+      <AdminInvitesPanel />
     </div>
   );
 }
@@ -566,6 +579,145 @@ function UserDetailDrawer({ user, onClose }: { user: User; onClose: () => void }
           ) : null}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Invite admins by email — applied instantly for existing accounts,
+ * or automatically on that email's first login otherwise. */
+function AdminInvitesPanel() {
+  const [invites, setInvites] = useState<AdminInvite[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [showModal, setShowModal] = useState(false);
+  const [email, setEmail] = useState('');
+  const [role, setRole] = useState<'admin' | 'owner'>('admin');
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const refresh = useCallback(() => {
+    listInvites()
+      .then(setInvites)
+      .catch((e) => setError(errorMessage(e)));
+  }, []);
+  useEffect(refresh, [refresh]);
+
+  const submit = async () => {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      setError('Enter a valid email address');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await createInvite(email.trim(), role);
+      setNotice(
+        res.promotedExisting
+          ? `${email.trim()} already has an account — promoted to ${role} immediately.`
+          : `Invite sent to ${email.trim()} — ${role} access applies on their first login.`,
+      );
+      setShowModal(false);
+      setEmail('');
+      refresh();
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const revoke = async (id: string) => {
+    try {
+      await revokeInvite(id);
+      refresh();
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  };
+
+  return (
+    <div className="card">
+      <div className="row-between">
+        <h3 className="card-title">Admin invites</h3>
+        <button className="btn btn-primary" onClick={() => setShowModal(true)}>
+          + Invite admin
+        </button>
+      </div>
+      <p className="muted small">
+        Invitees log in to this dashboard with the invited email (Google sign-in works) and get
+        admin access automatically — no signup needed.
+      </p>
+      {notice ? <p className="success-text">✔ {notice}</p> : null}
+      {error ? <p className="error-text">⚠ {error}</p> : null}
+
+      {invites && invites.length > 0 ? (
+        <div className="table-scroll">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Email</th>
+                <th>Role</th>
+                <th>Status</th>
+                <th>Invited by</th>
+                <th>Date</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {invites.map((i) => (
+                <tr key={i.id}>
+                  <td>{i.email}</td>
+                  <td>
+                    <Chip tone={i.role === 'owner' ? 'accent' : 'info'}>{i.role}</Chip>
+                  </td>
+                  <td>
+                    <Chip tone={i.status === 'accepted' ? 'good' : i.status === 'revoked' ? 'bad' : 'warn'}>
+                      {i.status}
+                    </Chip>
+                  </td>
+                  <td>{i.inviterName ?? '—'}</td>
+                  <td>{formatDate(i.createdAt)}</td>
+                  <td>
+                    {i.status === 'pending' ? (
+                      <button className="btn btn-ghost btn-sm" onClick={() => void revoke(i.id)}>
+                        Revoke
+                      </button>
+                    ) : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : invites ? (
+        <p className="muted small">No invites yet.</p>
+      ) : null}
+
+      {showModal ? (
+        <Modal title="Invite an admin" onClose={() => setShowModal(false)}>
+          <label className="field-label">Email address</label>
+          <input
+            className="input"
+            type="email"
+            placeholder="teammate@threemates.tech"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            autoFocus
+          />
+          <label className="field-label">Role</label>
+          <select className="input" value={role} onChange={(e) => setRole(e.target.value as 'admin' | 'owner')}>
+            <option value="admin">Admin — review, settle, manage</option>
+            <option value="owner">Owner — full control (owners only can grant)</option>
+          </select>
+          <div className="modal-actions">
+            <button className="btn btn-primary" disabled={busy} onClick={() => void submit()}>
+              {busy ? 'Sending…' : 'Send invite'}
+            </button>
+            <button className="btn btn-ghost" onClick={() => setShowModal(false)}>
+              Cancel
+            </button>
+          </div>
+        </Modal>
+      ) : null}
     </div>
   );
 }

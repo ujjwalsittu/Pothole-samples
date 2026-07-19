@@ -202,6 +202,17 @@ export const mail = {
       ),
     ),
 
+  adminInvite: (to: string, inviterName: string, role: string, adminUrl: string | null) =>
+    send(
+      to,
+      `${APP_NAME}: you've been invited as ${role}`,
+      layout(
+        `You're invited to administer ${APP_NAME}`,
+        `<p><b>${inviterName}</b> invited you to be an <b>${role}</b> on the ${APP_NAME} platform.</p>
+         <p>Log in ${adminUrl ? `at <a href="${adminUrl}">${adminUrl}</a>` : 'to the admin dashboard'} with <b>this email address</b> (Google sign-in works) — your admin access is applied automatically on first login.</p>`,
+      ),
+    ),
+
   settlementCompleted: (to: string, fullName: string, amountInr: number, utr: string | null) =>
     send(
       to,

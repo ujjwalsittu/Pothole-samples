@@ -167,6 +167,93 @@ adminRouter.patch(
   }),
 );
 
+/* --------------------------- admin invites ---------------------------- */
+
+/** POST /admin/invites — invite an admin by email. If the email already has
+ * an account, the role is applied immediately; otherwise a pending invite is
+ * created and applied automatically on that email's first login. */
+adminRouter.post(
+  '/invites',
+  asyncH(async (req, res) => {
+    const body = z
+      .object({
+        email: z.string().trim().email(),
+        role: z.enum(['admin', 'owner']).default('admin'),
+      })
+      .parse(req.body ?? {});
+    // Only an owner may grant the owner role.
+    if (body.role === 'owner' && req.user!.role !== 'owner') {
+      throw new ApiError(403, 'OWNER_REQUIRED', 'Only an owner can grant the owner role');
+    }
+
+    const existing = await query('SELECT * FROM users WHERE lower(email) = lower($1)', [body.email]);
+    if (existing.rows[0]) {
+      const { rows } = await query(
+        `UPDATE users SET role = $2, account_state = 'approved', approved_at = COALESCE(approved_at, now())
+         WHERE id = $1 RETURNING *`,
+        [existing.rows[0].id, body.role],
+      );
+      const user = rowToUser(rows[0]);
+      void mail.adminInvite(user.email, req.user!.fullName, body.role, config.corsOrigins?.[0] ?? null);
+      void audit(req.user!.id, 'admin.promote', 'user', user.id, { role: body.role });
+      return ok(res, { promotedExisting: true, user });
+    }
+
+    const { rows } = await query(
+      `INSERT INTO admin_invites (email, role, invited_by) VALUES ($1, $2, $3) RETURNING *`,
+      [body.email.toLowerCase(), body.role, req.user!.id],
+    ).catch((err) => {
+      if (/admin_invites_pending_email/.test(String(err?.message))) {
+        throw new ApiError(409, 'INVITE_EXISTS', 'A pending invite for this email already exists');
+      }
+      throw err;
+    });
+    void mail.adminInvite(body.email, req.user!.fullName, body.role, config.corsOrigins?.[0] ?? null);
+    void audit(req.user!.id, 'admin.invite', 'invite', rows[0].id as string, { email: body.email, role: body.role });
+    ok(res, { promotedExisting: false, invite: rowToInvite(rows[0]) }, 201);
+  }),
+);
+
+adminRouter.get(
+  '/invites',
+  asyncH(async (_req, res) => {
+    const { rows } = await query(
+      `SELECT i.*, u.full_name AS inviter_name FROM admin_invites i
+       LEFT JOIN users u ON u.id = i.invited_by ORDER BY i.created_at DESC`,
+    );
+    ok(res, rows.map(rowToInvite));
+  }),
+);
+
+adminRouter.post(
+  '/invites/:id/revoke',
+  asyncH(async (req, res) => {
+    assertUuid(req.params.id, 'INVITE_NOT_FOUND', 'Invite');
+    const { rows } = await query(
+      `UPDATE admin_invites SET revoked_at = now()
+       WHERE id = $1 AND accepted_at IS NULL AND revoked_at IS NULL RETURNING *`,
+      [req.params.id],
+    );
+    if (!rows[0]) throw new ApiError(404, 'INVITE_NOT_FOUND', 'No pending invite with that id');
+    void audit(req.user!.id, 'admin.invite_revoke', 'invite', req.params.id);
+    ok(res, rowToInvite(rows[0]));
+  }),
+);
+
+function rowToInvite(r: Record<string, unknown>) {
+  return {
+    id: r.id as string,
+    email: r.email as string,
+    role: r.role as string,
+    invitedBy: (r.invited_by as string | null) ?? null,
+    inviterName: (r.inviter_name as string | null) ?? null,
+    createdAt: r.created_at as string,
+    acceptedAt: (r.accepted_at as string | null) ?? null,
+    revokedAt: (r.revoked_at as string | null) ?? null,
+    status: r.accepted_at ? 'accepted' : r.revoked_at ? 'revoked' : 'pending',
+  };
+}
+
 /* ------------------------------ samples ------------------------------- */
 
 adminRouter.get(

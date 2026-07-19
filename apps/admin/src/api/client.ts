@@ -296,6 +296,33 @@ export function patchUser(
   return request(`/api/v1/admin/users/${id}`, jsonInit('PATCH', patch));
 }
 
+export interface AdminInvite {
+  id: string;
+  email: string;
+  role: 'admin' | 'owner';
+  inviterName: string | null;
+  createdAt: string;
+  acceptedAt: string | null;
+  revokedAt: string | null;
+  status: 'pending' | 'accepted' | 'revoked';
+}
+
+export async function listInvites(): Promise<AdminInvite[]> {
+  const data = await request<unknown>('/api/v1/admin/invites');
+  return asArray(data) as AdminInvite[];
+}
+
+export function createInvite(
+  email: string,
+  role: 'admin' | 'owner',
+): Promise<{ promotedExisting: boolean; invite?: AdminInvite }> {
+  return request('/api/v1/admin/invites', jsonInit('POST', { email, role }));
+}
+
+export function revokeInvite(id: string): Promise<unknown> {
+  return request(`/api/v1/admin/invites/${id}/revoke`, jsonInit('POST', {}));
+}
+
 export async function listSamples(
   state: Extract<
     SampleState,

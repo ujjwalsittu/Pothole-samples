@@ -151,21 +151,43 @@ usersRouter.get(
         const isPrimaryAdmin =
           Number(count.rows[0].n) === 0 ||
           (email !== null && email.toLowerCase() === PRIMARY_ADMIN_EMAIL.toLowerCase());
-        if (!isPrimaryAdmin) return null;
 
-        const fullName = email ? email.split('@')[0] : 'Primary Admin';
+        // Pending admin invite for this email? Accept it on first login.
+        let invitedRole: string | null = null;
+        let inviteId: string | null = null;
+        if (!isPrimaryAdmin && email) {
+          const inv = await client.query(
+            `SELECT id, role FROM admin_invites
+             WHERE lower(email) = lower($1) AND accepted_at IS NULL AND revoked_at IS NULL`,
+            [email],
+          );
+          if (inv.rows[0]) {
+            invitedRole = inv.rows[0].role as string;
+            inviteId = inv.rows[0].id as string;
+          }
+        }
+        if (!isPrimaryAdmin && !invitedRole) return null;
+
+        const role = isPrimaryAdmin ? 'owner' : invitedRole!;
+        const fullName = email ? email.split('@')[0] : 'Admin';
         const { rows } = await client.query(
           `INSERT INTO users
              (auth0_sub, email, full_name, collector_status, mobile, role, account_state, approved_at)
-           VALUES ($1,$2,$3,'professional',NULL,'owner','approved',now())
+           VALUES ($1,$2,$3,'professional',NULL,$4,'approved',now())
            ON CONFLICT (auth0_sub) DO UPDATE SET auth0_sub = EXCLUDED.auth0_sub
            RETURNING *`,
-          [authInfo.sub, email ?? `${authInfo.sub}@unknown.local`, fullName],
+          [authInfo.sub, email ?? `${authInfo.sub}@unknown.local`, fullName, role],
         );
+        if (inviteId) {
+          await client.query(
+            `UPDATE admin_invites SET accepted_at = now(), accepted_by = $2 WHERE id = $1`,
+            [inviteId, rows[0].id],
+          );
+        }
         return rowToUser(rows[0]);
       });
       if (!user) {
-        throw new ApiError(404, 'USER_NOT_REGISTERED', 'Complete signup in the mobile app first');
+        throw new ApiError(404, 'USER_NOT_REGISTERED', 'Complete signup in the mobile app first (or ask an admin for an invite)');
       }
     }
 
