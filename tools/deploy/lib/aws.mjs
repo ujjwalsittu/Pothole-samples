@@ -22,6 +22,7 @@ import {
   section,
   select,
   skipStep,
+  text,
   warn,
 } from './ui.mjs';
 
@@ -442,15 +443,49 @@ export async function deployAws(cfg) {
       if (!pem) throw new Error('no privateKeyBase64 in download-default-key-pair response');
       fs.writeFileSync(defPem, pem, { mode: 0o600 });
     }
-    if (!probe(defPem)) {
-      throw new Error(
-        `neither ${pemPath} nor the region default key opens ubuntu@${ip} — ` +
-          `check the instance's key pair in the Lightsail console`,
-      );
+    if (probe(defPem)) {
+      pemPath = defPem;
+      setArtifact('pemPath', pemPath);
+      note(`Using region default key: ${defPem}`);
+      return;
     }
-    pemPath = defPem;
-    setArtifact('pemPath', pemPath);
-    note(`Using region default key: ${defPem}`);
+
+    // Last resort: ask the user for a pem they downloaded themselves
+    // (e.g. from the Lightsail console → Account → SSH keys).
+    warn('The region default key was refused too.');
+    note('Download the key for this instance from the Lightsail console');
+    note('(Account → SSH keys, or the instance page) and enter its path below.');
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      let p = await text(`Path to .pem file that opens ubuntu@${ip}`, {
+        initial: attempt === 1 ? path.join(os.homedir(), 'Downloads', '') : undefined,
+      });
+      if (!p) throw new Error('no key available — aborting SSH');
+      p = p.trim().replace(/^~(?=$|\/)/, os.homedir());
+      if (!fs.existsSync(p)) {
+        warn(`File not found: ${p}`);
+        continue;
+      }
+      // ssh refuses keys with open permissions — always tighten to 600.
+      try {
+        if ((fs.statSync(p).mode & 0o077) !== 0) {
+          fs.chmodSync(p, 0o600);
+          note(`chmod 600 ${p}`);
+        }
+      } catch {
+        /* best effort */
+      }
+      if (probe(p)) {
+        pemPath = p;
+        setArtifact('pemPath', pemPath);
+        note(`Using your key: ${p}`);
+        return;
+      }
+      warn(`ubuntu@${ip} refused that key too — try another file (${attempt}/5).`);
+    }
+    throw new Error(
+      `no working key for ubuntu@${ip} — check which key pair the instance ` +
+        `shows in the Lightsail console and download exactly that one`,
+    );
   }, {
     manual: `ssh -i ${pemPath} ubuntu@${ip} true   # then: aws lightsail download-default-key-pair --profile ${PROFILE}`,
     alwaysRun: true,
