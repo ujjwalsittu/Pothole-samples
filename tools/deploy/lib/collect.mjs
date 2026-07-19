@@ -103,11 +103,42 @@ export async function collectRailwayStorage() {
 
 /** Lightsail-only extras. */
 export async function collectAwsBasics() {
-  section('AWS credentials (written to a DEDICATED profile)');
-  const awsAccessKeyId = await text('AWS Access Key ID', { validate: validators.nonEmpty });
-  const awsSecretAccessKey = await secret('AWS Secret Access Key', {
-    validate: validators.nonEmpty,
-  });
+  section('AWS authentication');
+  const awsAuthMethod = await select(
+    'How should the CLI authenticate to AWS?',
+    [
+      {
+        title: 'Paste access keys (works on ANY account) — stored in a dedicated profile',
+        value: 'keys',
+      },
+      {
+        title: 'Browser login via AWS IAM Identity Center / SSO (account must have it enabled)',
+        value: 'sso',
+      },
+      {
+        title: 'Use an existing aws-cli profile I already trust',
+        value: 'profile',
+      },
+    ],
+    0,
+  );
+
+  let awsAccessKeyId = '';
+  let awsSecretAccessKey = '';
+  let awsProfile = 'pothole-deploy';
+  if (awsAuthMethod === 'keys') {
+    awsAccessKeyId = await text('AWS Access Key ID', { validate: validators.nonEmpty });
+    awsSecretAccessKey = await secret('AWS Secret Access Key', {
+      validate: validators.nonEmpty,
+    });
+  } else if (awsAuthMethod === 'profile') {
+    awsProfile = await text('Existing aws-cli profile name', {
+      initial: 'default',
+      validate: validators.nonEmpty,
+    });
+  }
+  // 'sso' keeps the dedicated pothole-deploy profile: `aws configure sso`
+  // runs interactively in deploy step 1 and opens the browser.
 
   const region = await select(
     'Lightsail region',
@@ -143,5 +174,14 @@ export async function collectAwsBasics() {
     0,
   );
 
-  return { awsAccessKeyId, awsSecretAccessKey, region, availabilityZone, storageChoice, installDocker };
+  return {
+    awsAuthMethod,
+    awsAccessKeyId,
+    awsSecretAccessKey,
+    awsProfile,
+    region,
+    availabilityZone,
+    storageChoice,
+    installDocker,
+  };
 }

@@ -24,7 +24,7 @@ import {
   warn,
 } from './ui.mjs';
 
-const PROFILE = 'pothole-deploy';
+let PROFILE = 'pothole-deploy'; // overridden when the user picks an existing profile
 const DOCS = 'docs/DEPLOYMENT.md §2b';
 const INSTANCE = 'pothole-server';
 const STATIC_IP = 'pothole-ip';
@@ -52,24 +52,49 @@ export async function deployAws(cfg) {
     runCapture('aws', [...args, '--profile', PROFILE, '--region', cfg.region, '--output', 'json'], opts);
 
   /* -------- fresh, isolated credentials -------- */
-  section('AWS — credentials (dedicated profile)');
-  note(`Credentials go into the aws-cli profile "${PROFILE}" — your default profile and any`);
-  note('existing AWS sessions are left untouched (that IS the fresh-auth guarantee here).');
-  await runStep(
-    `Write profile ${PROFILE}`,
-    () => {
-      runCapture('aws', ['configure', 'set', 'aws_access_key_id', cfg.awsAccessKeyId, '--profile', PROFILE], {
-        redact: [cfg.awsAccessKeyId],
-      });
-      runCapture(
-        'aws',
-        ['configure', 'set', 'aws_secret_access_key', cfg.awsSecretAccessKey, '--profile', PROFILE],
-        { redact: [cfg.awsSecretAccessKey] },
-      );
-      runCapture('aws', ['configure', 'set', 'region', cfg.region, '--profile', PROFILE]);
-    },
-    { manual: `aws configure --profile ${PROFILE}`, docs: DOCS },
-  );
+  const method = cfg.awsAuthMethod ?? 'keys';
+  if (method === 'profile') PROFILE = cfg.awsProfile || 'default';
+
+  section('AWS — authentication');
+  if (method === 'keys') {
+    note(`Credentials go into the aws-cli profile "${PROFILE}" — your default profile and any`);
+    note('existing AWS sessions are left untouched (that IS the fresh-auth guarantee here).');
+    await runStep(
+      `Write profile ${PROFILE}`,
+      () => {
+        runCapture('aws', ['configure', 'set', 'aws_access_key_id', cfg.awsAccessKeyId, '--profile', PROFILE], {
+          redact: [cfg.awsAccessKeyId],
+        });
+        runCapture(
+          'aws',
+          ['configure', 'set', 'aws_secret_access_key', cfg.awsSecretAccessKey, '--profile', PROFILE],
+          { redact: [cfg.awsSecretAccessKey] },
+        );
+        runCapture('aws', ['configure', 'set', 'region', cfg.region, '--profile', PROFILE]);
+      },
+      { manual: `aws configure --profile ${PROFILE}`, docs: DOCS },
+    );
+  } else if (method === 'sso') {
+    note(`Browser login via IAM Identity Center, still isolated in profile "${PROFILE}".`);
+    note('Your browser will open — pick the account/role to deploy with.');
+    await runStep(
+      `Configure SSO profile ${PROFILE} (interactive)`,
+      () => {
+        // Interactive: prompts for the SSO start URL / account / role, opens
+        // the browser, and leaves a ready-to-use profile behind.
+        run('aws', ['configure', 'sso', '--profile', PROFILE]);
+        runCapture('aws', ['configure', 'set', 'region', cfg.region, '--profile', PROFILE]);
+      },
+      { manual: `aws configure sso --profile ${PROFILE}`, docs: DOCS },
+    );
+    await runStep(
+      'SSO login (refresh session if needed)',
+      () => run('aws', ['sso', 'login', '--profile', PROFILE]),
+      { manual: `aws sso login --profile ${PROFILE}`, optional: true },
+    );
+  } else {
+    note(`Using your existing aws-cli profile "${PROFILE}" as-is (no credentials written).`);
+  }
   await runStep(
     'Validate credentials (sts get-caller-identity)',
     () => {

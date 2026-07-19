@@ -29,9 +29,14 @@ npm run deploy -- --dry-run   # rehearse: prints every command, executes nothing
      step runner: on failure you get the exact manual command + doc pointer
      and a continue/abort choice.
 4. **AWS Lightsail path** (`docs/DEPLOYMENT.md` §2b)
-   - writes credentials into a **dedicated aws-cli profile** `pothole-deploy`
-     (your default profile/session is never touched — that's the isolation),
-     validates with `sts get-caller-identity`
+   - three authentication methods, all validated with `sts get-caller-identity`:
+     1. **Access keys** → written to a dedicated aws-cli profile
+        `pothole-deploy` (your default profile/session is never touched —
+        that's the isolation). Works on any AWS account.
+     2. **Browser login (SSO)** → `aws configure sso --profile pothole-deploy`
+        opens the browser; requires IAM Identity Center enabled on the
+        account. No long-lived keys pasted.
+     3. **Existing profile** → reuse a profile you already trust, as-is.
    - region + AZ pickers (Mumbai first), live plan picker from
      `get-bundles` (falls back to known bundle ids)
    - optional S3: bucket `pothole-media-<hex>` (+ public-access-block), IAM
