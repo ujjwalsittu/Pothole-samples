@@ -287,6 +287,34 @@ sudo certbot --nginx -d api.potholes.example.com -d admin.potholes.example.com
 
 ---
 
+## 2c. Docker deployment (any VM / VPS)
+
+A production compose stack lives at the repo root: Postgres + API + admin +
+**Caddy** (which maps the domains and issues + auto-renews Let's Encrypt
+certificates itself — no certbot). Domains default to the Threemates
+production hosts and are overridable via env:
+
+- **API**: `api-potholes.threemates.in`
+- **Admin**: `potholes.threemates.in`
+
+```bash
+# On a VM with docker + compose, DNS A records for both domains → this host:
+cp .env.production.example .env.production      # fill secrets (Postgres pw, Auth0, Resend)
+docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
+```
+
+Notes:
+- The admin image bakes `VITE_*` values at **build** time — after changing
+  domains/Auth0, rebuild it:
+  `docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build admin`
+- Media persists in the `prod-media` volume (`STORAGE_DRIVER=local`) or set
+  the S3 vars in `.env.production`.
+- The API image includes system ffmpeg; port 4000 and the admin's port 80
+  stay internal — only Caddy publishes 80/443.
+- Works on the Lightsail box from §2b too (install Docker, skip §2b.2–2b.4).
+
+---
+
 ## 3. Auth0 production checklist
 
 1. **API** (Auth0 → Applications → APIs): identifier =

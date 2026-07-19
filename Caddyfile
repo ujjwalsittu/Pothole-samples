@@ -1,0 +1,23 @@
+# Domain routing for the production docker-compose stack.
+# Domains come from .env.production (API_DOMAIN / ADMIN_DOMAIN).
+# Caddy issues and AUTO-RENEWS Let's Encrypt certificates by itself —
+# no certbot needed. DNS A records must point at this host first.
+{
+	email {$LETSENCRYPT_EMAIL}
+}
+
+{$API_DOMAIN} {
+	request_body {
+		max_size 1100MB
+	}
+	reverse_proxy api:4000 {
+		transport http {
+			read_timeout 300s
+			write_timeout 300s
+		}
+	}
+}
+
+{$ADMIN_DOMAIN} {
+	reverse_proxy admin:80
+}

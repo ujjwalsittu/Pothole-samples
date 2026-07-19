@@ -18,15 +18,17 @@ function detectRepoUrl() {
 /** Common questions for both targets. */
 export async function collectCommon() {
   section('Domains');
-  const baseDomain = await text('Base domain (e.g. potholes.example.com)', {
+  // Platform defaults (Threemates production) — every value stays editable.
+  const baseDomain = await text('Base domain', {
+    initial: 'threemates.in',
     validate: validators.domain,
   });
   const apiDomain = await text('API domain', {
-    initial: `api.${baseDomain}`,
+    initial: baseDomain === 'threemates.in' ? 'api-potholes.threemates.in' : `api.${baseDomain}`,
     validate: validators.domain,
   });
   const adminDomain = await text('Admin dashboard domain', {
-    initial: `admin.${baseDomain}`,
+    initial: baseDomain === 'threemates.in' ? 'potholes.threemates.in' : `admin.${baseDomain}`,
     validate: validators.domain,
   });
 

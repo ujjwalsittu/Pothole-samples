@@ -9,6 +9,7 @@ web-build/
 .env
 .env.*
 !.env.example
+!.env.production.example
 google-service-account.json
 
 # logs / artifacts
