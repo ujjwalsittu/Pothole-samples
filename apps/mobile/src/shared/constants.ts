@@ -12,13 +12,14 @@ export const API_VERSION = 'v1';
 
 /** Speed rules for video (record) mode, km/h. */
 export const SPEED = {
-  /** Real minimum acceptable average speed. */
-  MIN_KMPH: 60,
-  /** Real maximum acceptable speed — exceeding this rejects the sample. */
+  /**
+   * Real maximum acceptable speed — exceeding this rejects the sample.
+   * There is NO minimum speed: anything below MAX_KMPH is fine.
+   */
   MAX_KMPH: 65,
   /**
    * The speedometer shown to the user is capped at this value; the user is
-   * only ever told the limit is 60 km/h. Validation still uses MIN/MAX.
+   * only ever told the max is 60 km/h. Validation still uses MAX_KMPH.
    */
   DISPLAYED_CAP_KMPH: 60,
   /** GPS sampling interval while recording, ms. */
@@ -102,7 +103,7 @@ export const FILL_MATERIALS = {
 
 export const UPLOAD = {
   MAX_PHOTO_BYTES: 25 * 1024 * 1024,
-  MAX_VIDEO_BYTES: 500 * 1024 * 1024,
+  MAX_VIDEO_BYTES: 1024 * 1024 * 1024, // 1 GB
   /** Chunk size for resumable uploads on slow networks. */
   CHUNK_BYTES: 1 * 1024 * 1024,
 } as const;

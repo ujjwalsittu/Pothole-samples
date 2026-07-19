@@ -9,6 +9,7 @@ interface OverviewData {
   pendingApprovals: number;
   pendingReview: number;
   accepted: number;
+  partiallyAccepted: number;
   rejected: number;
   autoRejected: number;
   totalPayable: number | null; // null → could not compute
@@ -26,11 +27,12 @@ export function OverviewPage() {
     setData(null);
 
     (async () => {
-      const [pendingUsers, pendingReview, accepted, rejected, autoRejected, approvedUsers] =
+      const [pendingUsers, pendingReview, accepted, partiallyAccepted, rejected, autoRejected, approvedUsers] =
         await Promise.all([
           listUsers('pending_approval'),
           listSamples('pending_review'),
           listSamples('accepted'),
+          listSamples('partially_accepted').catch(() => [] as AdminSampleRow[]),
           listSamples('rejected'),
           listSamples('auto_rejected').catch(() => [] as AdminSampleRow[]),
           listUsers('approved').catch(() => [] as User[]),
@@ -48,7 +50,7 @@ export function OverviewPage() {
         totalPayable = null;
       }
 
-      const recent = [...pendingReview, ...accepted, ...rejected, ...autoRejected]
+      const recent = [...pendingReview, ...accepted, ...partiallyAccepted, ...rejected, ...autoRejected]
         .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
         .slice(0, 12);
 
@@ -56,6 +58,7 @@ export function OverviewPage() {
         pendingApprovals: pendingUsers.length,
         pendingReview: pendingReview.length,
         accepted: accepted.length,
+        partiallyAccepted: partiallyAccepted.length,
         rejected: rejected.length + autoRejected.length,
         autoRejected: autoRejected.length,
         totalPayable,
@@ -87,6 +90,12 @@ export function OverviewPage() {
           <StatCard label="Pending review" value={data.pendingReview} tone="accent" hint="samples in queue" />
         </Link>
         <StatCard label="Accepted samples" value={data.accepted} tone="good" />
+        <StatCard
+          label="Partially accepted"
+          value={data.partiallyAccepted}
+          tone="teal"
+          hint="subset of annotations kept"
+        />
         <StatCard
           label="Rejected samples"
           value={data.rejected}

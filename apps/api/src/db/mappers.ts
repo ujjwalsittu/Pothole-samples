@@ -60,6 +60,8 @@ export function rowToAnnotation(r: Row): Annotation {
     id: r.id,
     sampleId: r.sample_id,
     label: r.label,
+    status: r.status ?? 'pending',
+    createdBy: r.created_by ?? 'collector',
     polygon: r.polygon ?? [],
     videoTimeSec: numOrNull(r.video_time_sec),
     lat: num(r.lat),

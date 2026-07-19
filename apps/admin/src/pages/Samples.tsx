@@ -6,8 +6,17 @@ import { errorMessage, listSamples, sampleUserLabel } from '../api/client';
 import { SampleDetailPanel } from '../components/SampleDetailPanel';
 import { Chip, EmptyState, ErrorState, LoadingPanel, formatDate, stateTone } from '../components/ui';
 
-type ListableState = Extract<SampleState, 'pending_review' | 'accepted' | 'rejected' | 'auto_rejected'>;
-const ALL_STATES: ListableState[] = ['pending_review', 'accepted', 'rejected', 'auto_rejected'];
+type ListableState = Extract<
+  SampleState,
+  'pending_review' | 'accepted' | 'partially_accepted' | 'rejected' | 'auto_rejected'
+>;
+const ALL_STATES: ListableState[] = [
+  'pending_review',
+  'accepted',
+  'partially_accepted',
+  'rejected',
+  'auto_rejected',
+];
 
 export function SamplesPage() {
   const [stateFilter, setStateFilter] = useState<'all' | ListableState>('all');

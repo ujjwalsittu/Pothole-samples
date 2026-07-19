@@ -14,6 +14,7 @@
   --bad: #f87171;
   --warn: #fbbf24;
   --info: #60a5fa;
+  --teal: #2dd4bf;
   --radius: 10px;
 }
 
@@ -152,6 +153,7 @@ a { color: var(--info); }
 .stat-good { color: var(--good); }
 .stat-bad { color: var(--bad); }
 .stat-warn { color: var(--warn); }
+.stat-teal { color: var(--teal); }
 
 /* ---------------- buttons / chips / forms ---------------- */
 
@@ -173,6 +175,7 @@ a { color: var(--info); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-primary { background: var(--accent); border-color: var(--accent-dim); color: #1a1206; }
 .btn-danger { background: rgba(248, 113, 113, 0.14); border-color: rgba(248, 113, 113, 0.5); color: var(--bad); }
+.btn-teal { background: rgba(45, 212, 191, 0.14); border-color: rgba(45, 212, 191, 0.5); color: var(--teal); }
 .btn-ghost { background: transparent; }
 .btn-sm { padding: 4px 10px; font-size: 12px; }
 
@@ -194,6 +197,7 @@ a { color: var(--info); }
 .chip-warn { background: rgba(251, 191, 36, 0.12); border-color: rgba(251, 191, 36, 0.4); color: var(--warn); }
 .chip-accent { background: rgba(245, 158, 11, 0.12); border-color: rgba(245, 158, 11, 0.45); color: var(--accent); }
 .chip-info { background: rgba(96, 165, 250, 0.12); border-color: rgba(96, 165, 250, 0.4); color: var(--info); }
+.chip-teal { background: rgba(45, 212, 191, 0.12); border-color: rgba(45, 212, 191, 0.45); color: var(--teal); }
 
 input, select, textarea {
   background: var(--bg);
@@ -423,25 +427,79 @@ input[type='checkbox'] { width: 15px; height: 15px; accent-color: var(--accent);
 .media-loading { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 44px; }
 .video-player { width: 100%; max-height: 460px; border-radius: 8px; background: #000; }
 
-/* photo + polygon overlay */
-.photo-frame { position: relative; display: inline-block; max-width: 100%; }
+/* media + annotation editor overlay */
+.annot-frame { position: relative; display: inline-block; max-width: 100%; }
+.annot-frame.drawing { cursor: crosshair; }
 .photo-img { display: block; max-width: 100%; max-height: 520px; border-radius: 8px; }
-.photo-overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
-.poly-group { cursor: pointer; pointer-events: all; }
-.poly {
-  fill: rgba(245, 158, 11, 0.18);
-  stroke: var(--accent);
-  stroke-width: 2px;
-}
-.poly.selected { fill: rgba(52, 211, 153, 0.25); stroke: var(--good); }
+.annot-overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
+.annot-frame.drawing .video-player { pointer-events: none; }
+
+.poly { fill: rgba(251, 191, 36, 0.16); stroke: var(--warn); stroke-width: 2px; }
+.status-accepted .poly { fill: rgba(52, 211, 153, 0.18); stroke: var(--good); }
+.status-rejected .poly { fill: rgba(248, 113, 113, 0.16); stroke: var(--bad); stroke-dasharray: 6 4; }
+.poly-group.selected .poly { stroke-width: 3px; filter: drop-shadow(0 0 4px rgba(245, 158, 11, 0.8)); }
 .poly-label {
-  font-size: 0.028px;
+  font-size: 12px;
   fill: #fff;
   paint-order: stroke;
   stroke: rgba(0, 0, 0, 0.75);
-  stroke-width: 0.006px;
+  stroke-width: 3px;
   pointer-events: none;
 }
+
+.handle-vertex { fill: #fff; stroke: var(--accent); stroke-width: 2; }
+.handle-vertex:hover { fill: var(--accent); }
+.handle-mid { fill: transparent; stroke: rgba(229, 231, 235, 0.75); stroke-width: 1.5; cursor: copy; }
+.handle-mid:hover { fill: rgba(229, 231, 235, 0.4); }
+.handle-draft { fill: var(--accent); stroke: #0b1220; stroke-width: 1.5; }
+.draft-line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-dasharray: 5 4; }
+.draft-close { stroke: rgba(52, 211, 153, 0.7); stroke-width: 1.5; stroke-dasharray: 3 4; }
+
+.draw-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 8px;
+  transform: translateX(-50%);
+  background: rgba(4, 8, 18, 0.85);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 14px;
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+  pointer-events: none;
+}
+kbd {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 5px;
+  font-size: 11px;
+  font-family: inherit;
+}
+
+.annot-toolbar { padding: 10px 14px; }
+
+/* per-annotation status toggles */
+.status-toggle { display: inline-flex; gap: 4px; }
+.toggle-chip {
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.toggle-chip:disabled { opacity: 0.5; cursor: not-allowed; }
+.toggle-chip.good.on { background: rgba(52, 211, 153, 0.18); border-color: var(--good); color: var(--good); }
+.toggle-chip.bad.on { background: rgba(248, 113, 113, 0.18); border-color: var(--bad); color: var(--bad); }
+.toggle-chip.good:hover:not(:disabled) { color: var(--good); border-color: var(--good); }
+.toggle-chip.bad:hover:not(:disabled) { color: var(--bad); border-color: var(--bad); }
+
+.ann-row.far { opacity: 0.55; }
+.ann-delete { margin-left: auto; }
 
 /* gps map */
 .gps-map { width: 100%; height: auto; display: block; }
@@ -553,18 +611,15 @@ input[type='checkbox'] { width: 15px; height: 15px; accent-color: var(--accent);
 
 /* ---------------- exports ---------------- */
 
-.export-grid { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
-.export-card {
-  display: flex;
-  align-items: center;
+.export-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
   gap: 14px;
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 12px 14px;
+  align-items: start;
 }
-.export-icon { font-size: 24px; }
-.export-main { flex: 1; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.export-bundle { display: flex; flex-direction: column; gap: 6px; }
+.legacy-rows { display: flex; flex-direction: column; gap: 10px; }
+.legacy-label { min-width: 84px; font-weight: 600; }
 
 .progress-wrap { display: flex; flex-direction: column; gap: 3px; margin-top: 4px; }
 .progress-bar {
@@ -603,3 +658,7 @@ input[type='checkbox'] { width: 15px; height: 15px; accent-color: var(--accent);
   .sidebar-footer { display: none; }
   .identity-text { display: none; }
 }
+
+/* annotation editor svg helpers */
+.draft-group { opacity: 0.9; }
+.handle { cursor: grab; }

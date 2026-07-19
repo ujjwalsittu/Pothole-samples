@@ -71,6 +71,13 @@ function SampleRow({ sample }: { sample: Sample }) {
       <Text style={styles.rowMeta}>
         {new Date(sample.capturedAt).toLocaleString()} · {sample.lat.toFixed(5)}, {sample.lng.toFixed(5)}
       </Text>
+      {sample.state === 'partially_accepted' ? (
+        <View style={styles.partialBox}>
+          <Text style={styles.partialText}>
+            Some annotations were adjusted by the reviewer — full credit granted.
+          </Text>
+        </View>
+      ) : null}
       {isRejected ? (
         <View style={styles.rejectBox}>
           {sample.rejectionReason ? (
@@ -108,6 +115,15 @@ const styles = StyleSheet.create({
   rowHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   rowTitle: { color: colors.text, fontSize: font.body, fontWeight: '600', flex: 1, marginRight: spacing.sm },
   rowMeta: { color: colors.textFaint, fontSize: font.tiny, marginTop: spacing.xs },
+  partialBox: {
+    marginTop: spacing.sm,
+    borderRadius: radius.sm,
+    backgroundColor: '#134E4A33',
+    borderWidth: 1,
+    borderColor: '#134E4A',
+    padding: spacing.sm,
+  },
+  partialText: { color: '#5EEAD4', fontSize: font.tiny },
   rejectBox: {
     marginTop: spacing.sm,
     borderRadius: radius.sm,

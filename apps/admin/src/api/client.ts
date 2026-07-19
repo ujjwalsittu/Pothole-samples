@@ -1,8 +1,11 @@
 import type {
   Annotation,
+  AnnotationStatus,
   ApiResponse,
   GpsPoint,
   LedgerEntry,
+  PolygonPoint,
+  PotholeEstimate,
   Sample,
   SampleState,
   Settlement,
@@ -188,11 +191,17 @@ function normalizeBalance(data: unknown): BalanceInfo {
 function normalizeSampleDetail(data: unknown): SampleDetail {
   const obj = (data && typeof data === 'object' ? data : {}) as Record<string, any>;
   const sample: AdminSampleRow = (obj.sample ?? obj) as AdminSampleRow;
-  const annotations: Annotation[] = Array.isArray(obj.annotations)
+  const rawAnnotations: any[] = Array.isArray(obj.annotations)
     ? obj.annotations
     : Array.isArray(sample && (sample as any).annotations)
       ? (sample as any).annotations
       : [];
+  // Tolerate rows missing the newer status/createdBy fields.
+  const annotations: Annotation[] = rawAnnotations.map((a) => ({
+    status: 'pending',
+    createdBy: 'collector',
+    ...a,
+  }));
   let gpsTrack: GpsTrack | null = null;
   const rawTrack = obj.gpsTrack ?? (sample as any)?.gpsTrack ?? null;
   if (rawTrack && typeof rawTrack === 'object') {
@@ -247,7 +256,10 @@ export function patchUser(
 }
 
 export async function listSamples(
-  state: Extract<SampleState, 'pending_review' | 'accepted' | 'rejected' | 'auto_rejected'>,
+  state: Extract<
+    SampleState,
+    'pending_review' | 'accepted' | 'partially_accepted' | 'rejected' | 'auto_rejected'
+  >,
 ): Promise<AdminSampleRow[]> {
   const data = await request<unknown>(`/api/v1/admin/samples?state=${state}`);
   return asArray(data) as AdminSampleRow[];
@@ -258,12 +270,58 @@ export async function getSampleDetail(id: string): Promise<SampleDetail> {
   return normalizeSampleDetail(data);
 }
 
-export function reviewSample(
-  id: string,
-  decision: 'accepted' | 'rejected',
-  reason?: string,
-): Promise<unknown> {
+export type ReviewDecision = 'accepted' | 'partially_accepted' | 'rejected';
+
+export function reviewSample(id: string, decision: ReviewDecision, reason?: string): Promise<unknown> {
   return request(`/api/v1/admin/samples/${id}/review`, jsonInit('POST', { decision, reason }));
+}
+
+/* ---------------- annotation editing ---------------- */
+
+export interface AnnotationCreateBody {
+  label: string;
+  polygon: PolygonPoint[];
+  videoTimeSec?: number;
+  estimate?: PotholeEstimate;
+}
+
+export interface AnnotationPatchBody {
+  label?: string;
+  polygon?: PolygonPoint[];
+  videoTimeSec?: number;
+  status?: AnnotationStatus;
+}
+
+/** Tolerant: the API may return the annotation bare or wrapped. */
+function normalizeAnnotation(data: unknown, fallback: Annotation): Annotation {
+  const obj = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
+  const raw = (obj.annotation && typeof obj.annotation === 'object' ? obj.annotation : obj) as Partial<Annotation>;
+  return {
+    ...fallback,
+    ...raw,
+    id: typeof raw.id === 'string' && raw.id ? raw.id : fallback.id,
+    polygon: Array.isArray(raw.polygon) ? raw.polygon : fallback.polygon,
+  };
+}
+
+export async function createAnnotation(
+  sampleId: string,
+  body: AnnotationCreateBody,
+  fallback: Annotation,
+): Promise<Annotation> {
+  const data = await request<unknown>(
+    `/api/v1/admin/samples/${sampleId}/annotations`,
+    jsonInit('POST', body),
+  );
+  return normalizeAnnotation(data, fallback);
+}
+
+export function patchAnnotation(annotationId: string, body: AnnotationPatchBody): Promise<unknown> {
+  return request(`/api/v1/admin/annotations/${annotationId}`, jsonInit('PATCH', body));
+}
+
+export function deleteAnnotation(annotationId: string): Promise<unknown> {
+  return request(`/api/v1/admin/annotations/${annotationId}`, { method: 'DELETE' });
 }
 
 export async function listSettlements(): Promise<SettlementRow[]> {
@@ -299,10 +357,12 @@ export async function getLedger(userId: string): Promise<LedgerEntry[]> {
   }
 }
 
-export function exportToDrive(): Promise<
+export type ExportBundle = 'training' | 'raw';
+
+export function exportToDrive(bundle: ExportBundle): Promise<
   { folderLink?: string; folderUrl?: string; link?: string; url?: string } & Record<string, unknown>
 > {
-  return request('/api/v1/admin/export/drive', jsonInit('POST', {}));
+  return request('/api/v1/admin/export/drive', jsonInit('POST', { bundle }));
 }
 
 /* ------------------------------------------------------------------ */

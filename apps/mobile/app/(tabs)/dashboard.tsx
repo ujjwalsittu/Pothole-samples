@@ -3,6 +3,7 @@ import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'r
 import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ProgressBar } from '@/components/ProgressBar';
+import { CoachMark, useCoachMark } from '@/components/CoachMark';
 import { getDashboardStats } from '@/api/endpoints';
 import { useAuth } from '@/auth/AuthContext';
 import { uploadManager } from '@/upload/manager';
@@ -15,6 +16,7 @@ export default function DashboardScreen() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [pendingUploads, setPendingUploads] = useState(0);
+  const coach = useCoachMark('coach_dashboard_v1');
 
   const load = useCallback(async () => {
     try {
@@ -62,13 +64,22 @@ export default function DashboardScreen() {
           </Pressable>
         ) : null}
 
-        {/* stat grid */}
+        {/* stat grid — accepted includes partially accepted (both earn credit) */}
         <View style={styles.grid}>
           <StatCard label="Total" value={stats?.totalSamples ?? '—'} />
-          <StatCard label="Accepted" value={stats?.accepted ?? '—'} color={colors.success} />
+          <StatCard
+            label="Accepted"
+            value={stats ? stats.accepted + stats.partiallyAccepted : '—'}
+            color={colors.success}
+          />
           <StatCard label="Pending" value={stats?.pending ?? '—'} color={colors.warning} />
           <StatCard label="Rejected" value={stats?.rejected ?? '—'} color={colors.danger} />
         </View>
+        {stats && stats.partiallyAccepted > 0 ? (
+          <Text style={styles.partialNote}>
+            includes {stats.partiallyAccepted} partially accepted (full credit)
+          </Text>
+        ) : null}
 
         {/* package progress */}
         <View style={styles.card}>
@@ -91,21 +102,29 @@ export default function DashboardScreen() {
         </View>
 
         {/* capture buttons */}
-        <Pressable
-          style={[styles.captureBtn, styles.capturePhoto]}
-          onPress={() => router.push('/capture/preflight?mode=photo')}
-        >
-          <Text style={styles.captureTitle}>Capture Photo</Text>
-          <Text style={styles.captureSub}>One pothole photo with exact GPS</Text>
-        </Pressable>
-        <Pressable
-          style={[styles.captureBtn, styles.captureVideo]}
-          onPress={() => router.push('/capture/preflight?mode=video')}
-        >
-          <Text style={styles.captureTitleAlt}>Record Video</Text>
-          <Text style={styles.captureSubAlt}>40s+ drive-by video, 2+ potholes</Text>
-        </Pressable>
+        <View ref={coach.targetRef} onLayout={coach.onTargetLayout} collapsable={false}>
+          <Pressable
+            style={[styles.captureBtn, styles.capturePhoto]}
+            onPress={() => router.push('/capture/preflight?mode=photo')}
+          >
+            <Text style={styles.captureTitle}>Capture Photo</Text>
+            <Text style={styles.captureSub}>One pothole photo with exact GPS</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.captureBtn, styles.captureVideo]}
+            onPress={() => router.push('/capture/preflight?mode=video')}
+          >
+            <Text style={styles.captureTitleAlt}>Record Video</Text>
+            <Text style={styles.captureSubAlt}>40s+ drive-by video, 2+ potholes</Text>
+          </Pressable>
+        </View>
       </ScrollView>
+
+      <CoachMark
+        coach={coach}
+        title="Start collecting here"
+        body="Capture a photo or record a drive-by video. Every capture runs a quick check first: internet, precise GPS and camera access."
+      />
     </SafeAreaView>
   );
 }
@@ -132,6 +151,7 @@ const styles = StyleSheet.create({
   },
   queueText: { color: '#FCD34D', fontSize: font.small, fontWeight: '600', textAlign: 'center' },
   grid: { flexDirection: 'row', gap: spacing.sm },
+  partialNote: { color: colors.textFaint, fontSize: font.tiny, marginTop: spacing.xs },
   statCard: {
     flex: 1,
     backgroundColor: colors.card,

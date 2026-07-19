@@ -97,6 +97,17 @@ export const mail = {
       ),
     ),
 
+  samplePartiallyAccepted: (to: string, fullName: string, sampleId: string, amountInr: number) =>
+    send(
+      to,
+      `${APP_NAME}: sample accepted with adjustments — ₹${amountInr} credited`,
+      layout(
+        'Sample accepted with adjustments',
+        `<p>Hi ${fullName},</p>
+         <p>Your sample <code>${sampleId}</code> was <b>accepted</b> after the reviewer adjusted some of its annotations. <b>₹${amountInr}</b> has been credited to your balance.</p>`,
+      ),
+    ),
+
   sampleRejected: (to: string, fullName: string, sampleId: string, reason: string) =>
     send(
       to,

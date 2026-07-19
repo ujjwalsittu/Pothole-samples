@@ -42,7 +42,7 @@ const FRIENDLY_REJECTIONS: Record<string, string> = {
   DUPLICATE_EXACT: 'This exact file was already submitted (by you or someone else).',
   DUPLICATE_PHASH: 'This image is too similar to an already-submitted sample.',
   DUPLICATE_LOCATION: 'A sample already exists at this location.',
-  SPEED_OUT_OF_RANGE: 'The recording speed was outside the allowed range. Keep it at 60 km/h.',
+  SPEED_OUT_OF_RANGE: 'Recording speed exceeded the limit — stay at or under 60 km/h.',
   VIDEO_TOO_SHORT: 'The video is shorter than the 40 second minimum.',
   TOO_FEW_POTHOLES: 'Videos need at least 2 marked potholes.',
   MOCK_LOCATION: 'A mock/simulated GPS location was detected. Samples must use real GPS.',
@@ -75,9 +75,17 @@ export interface DraftInput {
 
 type Listener = () => void;
 
+/** High-level queue events, surfaced as toasts in the UI. */
+export interface UploadEvent {
+  kind: 'done' | 'rejected' | 'failed';
+  message: string;
+}
+type EventListener = (event: UploadEvent) => void;
+
 class UploadManager {
   private running = false;
   private listeners = new Set<Listener>();
+  private eventListeners = new Set<EventListener>();
   private started = false;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -113,6 +121,16 @@ class UploadManager {
     for (const fn of this.listeners) fn();
   }
 
+  /** Subscribe to toast-worthy queue events (done / rejected / failed). */
+  subscribeEvents(fn: EventListener): () => void {
+    this.eventListeners.add(fn);
+    return () => this.eventListeners.delete(fn);
+  }
+
+  private emit(event: UploadEvent): void {
+    for (const fn of this.eventListeners) fn(event);
+  }
+
   getQueue(): QueueItem[] {
     return listQueue();
   }
@@ -136,6 +154,17 @@ class UploadManager {
 
     const info = await FileSystem.getInfoAsync(filePath, { size: true });
     const sizeBytes = info.exists ? info.size ?? 0 : 0;
+    const maxBytes = input.mediaType === 'photo' ? UPLOAD.MAX_PHOTO_BYTES : UPLOAD.MAX_VIDEO_BYTES;
+    if (sizeBytes > maxBytes) {
+      await FileSystem.deleteAsync(dir, { idempotent: true });
+      const limit =
+        input.mediaType === 'photo'
+          ? `${Math.round(UPLOAD.MAX_PHOTO_BYTES / (1024 * 1024))} MB`
+          : `${Math.round(UPLOAD.MAX_VIDEO_BYTES / (1024 * 1024 * 1024))} GB`;
+      throw new Error(
+        `This ${input.mediaType} is larger than the ${limit} limit — capture a shorter/smaller sample.`,
+      );
+    }
     const sha256 = await sha256OfFile(filePath);
     const totalChunks = Math.max(1, Math.ceil(sizeBytes / UPLOAD.CHUNK_BYTES));
 
@@ -261,21 +290,28 @@ class UploadManager {
         await this.withRetry(() => postAnnotations(serverSampleId as string, meta.annotations));
       }
       updateQueueItem(item.id, { state: 'done', error: null });
+      this.emit({
+        kind: 'done',
+        message: `${meta.mediaType === 'photo' ? 'Photo' : 'Video'} sample uploaded.`,
+      });
       this.notify();
     } catch (e) {
       if (e instanceof ApiError) {
         const friendly = rejectionMessage(e.code);
         if (friendly && !isRetryable(e)) {
           updateQueueItem(item.id, { state: 'rejected', error: friendly });
+          this.emit({ kind: 'rejected', message: `Sample rejected: ${friendly}` });
           this.notify();
           return;
         }
         updateQueueItem(item.id, { state: 'failed', error: e.message });
+        this.emit({ kind: 'failed', message: 'Upload failed — will retry automatically.' });
       } else {
         updateQueueItem(item.id, {
           state: 'failed',
           error: e instanceof Error ? e.message : 'Upload failed',
         });
+        this.emit({ kind: 'failed', message: 'Upload failed — will retry automatically.' });
       }
       this.notify();
     }

@@ -4,12 +4,13 @@ import { colors, font, radius, spacing } from '@/theme';
 import type { QueueState } from '@/upload/db';
 import type { SampleState } from '@/shared';
 
-type Tone = 'neutral' | 'info' | 'success' | 'danger' | 'warning';
+type Tone = 'neutral' | 'info' | 'success' | 'teal' | 'danger' | 'warning';
 
 const TONE_COLORS: Record<Tone, { bg: string; fg: string }> = {
   neutral: { bg: '#1E293B', fg: colors.textDim },
   info: { bg: '#0C4A6E', fg: '#7DD3FC' },
   success: { bg: '#14532D', fg: '#86EFAC' },
+  teal: { bg: '#134E4A', fg: '#5EEAD4' },
   danger: { bg: '#7F1D1D', fg: '#FCA5A5' },
   warning: { bg: '#78350F', fg: '#FCD34D' },
 };
@@ -35,6 +36,8 @@ export function sampleStateChip(state: SampleState): { label: string; tone: Tone
       return { label: 'Pending review', tone: 'warning' };
     case 'accepted':
       return { label: 'Accepted', tone: 'success' };
+    case 'partially_accepted':
+      return { label: 'Partially accepted', tone: 'teal' };
     case 'auto_rejected':
       return { label: 'Auto-rejected', tone: 'danger' };
     case 'rejected':

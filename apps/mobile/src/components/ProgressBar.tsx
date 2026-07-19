@@ -1,5 +1,10 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+} from 'react-native-reanimated';
 import { colors, font, radius, spacing } from '@/theme';
 
 interface Props {
@@ -11,8 +16,19 @@ interface Props {
   color?: string;
 }
 
+/** Progress bar whose fill springs to its value. */
 export function ProgressBar({ progress, label, valueText, color = colors.primary }: Props) {
   const clamped = Math.max(0, Math.min(1, progress));
+  const anim = useSharedValue(0);
+
+  useEffect(() => {
+    anim.value = withSpring(clamped, { damping: 18, stiffness: 120 });
+  }, [clamped, anim]);
+
+  const fillStyle = useAnimatedStyle(() => ({
+    width: `${anim.value * 100}%`,
+  }));
+
   return (
     <View style={styles.wrap}>
       {(label || valueText) && (
@@ -22,7 +38,7 @@ export function ProgressBar({ progress, label, valueText, color = colors.primary
         </View>
       )}
       <View style={styles.track}>
-        <View style={[styles.fill, { width: `${clamped * 100}%`, backgroundColor: color }]} />
+        <Animated.View style={[styles.fill, { backgroundColor: color }, fillStyle]} />
       </View>
     </View>
   );

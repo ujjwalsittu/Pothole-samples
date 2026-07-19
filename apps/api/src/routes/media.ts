@@ -2,13 +2,17 @@ import { Router } from 'express';
 import { query } from '../db/pool';
 import { ApiError, asyncH } from '../http';
 import { requireUser } from '../middleware/auth';
-import { fileSize, readStream } from '../services/storage';
+import { openMediaStream, type StorageDriverName } from '../services/storage';
 
 export const mediaRouter = Router();
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** GET /media/:sampleId — stream the sample's media (owner or admin). Supports Range. */
+/**
+ * GET /media/:sampleId — stream the sample's media (owner or admin) from the
+ * driver it is stored on (local disk, or S3 GetObject proxy). Supports Range
+ * on both backends; S3 ContentRange/206 is passed straight through.
+ */
 mediaRouter.get(
   '/media/:sampleId',
   requireUser,
@@ -18,7 +22,7 @@ mediaRouter.get(
     if (!UUID_RE.test(id)) throw new ApiError(404, 'SAMPLE_NOT_FOUND', 'Sample not found');
 
     const { rows } = await query(
-      'SELECT user_id, media_path, media_mime FROM samples WHERE id = $1',
+      'SELECT user_id, media_path, media_mime, storage_driver FROM samples WHERE id = $1',
       [id],
     );
     const row = rows[0];
@@ -28,31 +32,21 @@ mediaRouter.get(
     }
     const mediaPath = row.media_path as string | null;
     if (!mediaPath) throw new ApiError(404, 'MEDIA_NOT_FOUND', 'No media stored for this sample');
-    const size = await fileSize(mediaPath);
-    if (size == null) throw new ApiError(404, 'MEDIA_NOT_FOUND', 'Media file missing on disk');
 
-    const mime = (row.media_mime as string | null) ?? 'application/octet-stream';
+    const storedOn = ((row.storage_driver as string | null) ?? 'local') as StorageDriverName;
+    const media = await openMediaStream(mediaPath, storedOn, req.headers.range ?? null);
+    if (!media) throw new ApiError(404, 'MEDIA_NOT_FOUND', 'Media file missing from storage');
+
     res.setHeader('Accept-Ranges', 'bytes');
-
-    const range = req.headers.range;
-    const match = range ? /^bytes=(\d*)-(\d*)$/.exec(range) : null;
-    if (match && (match[1] || match[2])) {
-      const start = match[1] ? parseInt(match[1], 10) : Math.max(0, size - parseInt(match[2], 10));
-      const end = match[1] && match[2] ? Math.min(parseInt(match[2], 10), size - 1) : size - 1;
-      if (start >= size || start > end) {
-        res.status(416).setHeader('Content-Range', `bytes */${size}`).end();
-        return;
-      }
-      res.status(206);
-      res.setHeader('Content-Range', `bytes ${start}-${end}/${size}`);
-      res.setHeader('Content-Length', end - start + 1);
-      res.setHeader('Content-Type', mime);
-      readStream(mediaPath, { start, end }).pipe(res);
+    if (media.status === 416) {
+      if (media.contentRange) res.setHeader('Content-Range', media.contentRange);
+      res.status(416).end();
       return;
     }
-
-    res.setHeader('Content-Length', size);
-    res.setHeader('Content-Type', mime);
-    readStream(mediaPath).pipe(res);
+    res.status(media.status);
+    res.setHeader('Content-Type', (row.media_mime as string | null) ?? 'application/octet-stream');
+    if (media.contentLength != null) res.setHeader('Content-Length', media.contentLength);
+    if (media.contentRange) res.setHeader('Content-Range', media.contentRange);
+    media.stream?.pipe(res);
   }),
 );

@@ -3,6 +3,12 @@ import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-nati
 import { useRouter } from 'expo-router';
 import { CameraView } from 'expo-camera';
 import * as Location from 'expo-location';
+import * as Haptics from 'expo-haptics';
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+} from 'react-native-reanimated';
 import { GuidelinesOverlay } from '@/components/GuidelinesOverlay';
 import { setCapture } from '@/capture/session';
 import { colors, font, radius, spacing } from '@/theme';
@@ -18,8 +24,14 @@ export default function PhotoCaptureScreen() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const shutterScale = useSharedValue(1);
+  const shutterStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: shutterScale.value }],
+  }));
+
   const shoot = async () => {
     if (busy || !cameraRef.current) return;
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setBusy(true);
     setError(null);
     try {
@@ -69,9 +81,21 @@ export default function PhotoCaptureScreen() {
         <Pressable style={styles.cancel} onPress={() => router.back()}>
           <Text style={styles.cancelText}>Cancel</Text>
         </Pressable>
-        <Pressable style={styles.shutter} onPress={() => void shoot()} disabled={busy}>
-          {busy ? <ActivityIndicator color={colors.onPrimary} /> : <View style={styles.shutterInner} />}
-        </Pressable>
+        <Animated.View style={shutterStyle}>
+          <Pressable
+            style={styles.shutter}
+            onPress={() => void shoot()}
+            onPressIn={() => {
+              shutterScale.value = withSpring(0.88, { damping: 18, stiffness: 320 });
+            }}
+            onPressOut={() => {
+              shutterScale.value = withSpring(1, { damping: 18, stiffness: 320 });
+            }}
+            disabled={busy}
+          >
+            {busy ? <ActivityIndicator color={colors.onPrimary} /> : <View style={styles.shutterInner} />}
+          </Pressable>
+        </Animated.View>
         <View style={styles.cancelSpacer} />
       </View>
     </View>

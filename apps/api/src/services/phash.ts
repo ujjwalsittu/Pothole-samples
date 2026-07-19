@@ -8,7 +8,7 @@ type SharpModule = typeof import('sharp');
 
 let sharpMod: SharpModule | null | undefined;
 
-async function getSharp(): Promise<SharpModule | null> {
+export async function getSharp(): Promise<SharpModule | null> {
   if (sharpMod !== undefined) return sharpMod;
   try {
     sharpMod = (await import('sharp')).default as unknown as SharpModule;

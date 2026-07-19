@@ -20,7 +20,14 @@ import { rowToAnnotation, rowToSample } from '../db/mappers';
 import { ApiError, asyncH, ok } from '../http';
 import { requireApproved, requireUser } from '../middleware/auth';
 import { aHashHex, hammingHex } from '../services/phash';
-import { absPath, contentHashOfFile, fileSize, sampleRelPath, writeChunkAt } from '../services/storage';
+import {
+  absPath,
+  contentHashOfFile,
+  fileSize,
+  finalizeSampleMedia,
+  sampleRelPath,
+  writeChunkAt,
+} from '../services/storage';
 
 export const samplesRouter = Router();
 
@@ -154,16 +161,17 @@ samplesRouter.post(
       if (!body.gpsTrack || points.length < 2) {
         throw new ApiError(422, 'TRACK_REQUIRED', 'A GPS track is required for video samples');
       }
-      // 6) SPEED_OUT_OF_RANGE — real limits are SPEED.MIN_KMPH..SPEED.MAX_KMPH,
-      // but the user is only ever told "60 km/h". Never reveal the upper bound.
+      // 6) SPEED_OUT_OF_RANGE — there is NO minimum speed; only exceeding the
+      // real cap (SPEED.MAX_KMPH) rejects. The user is only ever told "60
+      // km/h" — never reveal the real upper bound.
       const speeds = trackSpeedsKmph(points);
       avgSpeedKmph = speeds.avg;
       maxSpeedKmph = speeds.max;
-      if (speeds.avg < SPEED.MIN_KMPH || speeds.max > SPEED.MAX_KMPH) {
+      if (speeds.max > SPEED.MAX_KMPH) {
         throw new ApiError(
           422,
           'SPEED_OUT_OF_RANGE',
-          `Speed must be close to ${SPEED.DISPLAYED_CAP_KMPH} km/h while recording. Please record again at a steady ${SPEED.DISPLAYED_CAP_KMPH} km/h.`,
+          `Speed must stay at or below ${SPEED.DISPLAYED_CAP_KMPH} km/h while recording. Please record again.`,
         );
       }
     }
@@ -308,15 +316,20 @@ samplesRouter.post(
     }
 
     // Server-side perceptual hash for photos is authoritative; replace the
-    // client value when we can compute one (sharp may be unavailable).
+    // client value when we can compute one (sharp may be unavailable). Must
+    // run BEFORE the file is promoted off local staging disk.
     let phash = (row!.phash as string | null) ?? null;
     if (row!.media_type === 'photo') {
       const serverHash = await aHashHex(absPath(mediaPath));
       if (serverHash) phash = serverHash;
     }
 
+    // Promote assembled media to the active storage driver (multipart upload
+    // to S3 + delete local staging copy when STORAGE_DRIVER=s3).
+    const storedOn = await finalizeSampleMedia(mediaPath, row!.media_mime as string | null);
+
     const annCount = await query<{ n: string }>(
-      'SELECT COUNT(*) AS n FROM annotations WHERE sample_id = $1',
+      `SELECT COUNT(*) AS n FROM annotations WHERE sample_id = $1 AND status <> 'rejected'`,
       [row!.id],
     );
     const n = Number(annCount.rows[0].n);
@@ -324,8 +337,9 @@ samplesRouter.post(
     const nextState = n >= required ? 'pending_review' : 'uploaded';
 
     const { rows } = await query(
-      `UPDATE samples SET state = $2, phash = $3, pothole_count = $4 WHERE id = $1 RETURNING *`,
-      [row!.id, nextState, phash, n],
+      `UPDATE samples SET state = $2, phash = $3, pothole_count = $4, storage_driver = $5
+       WHERE id = $1 RETURNING *`,
+      [row!.id, nextState, phash, n, storedOn],
     );
     ok(res, rowToSample(rows[0]));
   }),

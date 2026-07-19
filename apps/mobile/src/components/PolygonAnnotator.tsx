@@ -8,12 +8,18 @@
  *   scale-reference line.
  * - mode "view": render-only.
  *
+ * Polish: vertices of the active polygon drop in with a spring, the active
+ * polygon gets a soft glow outline, a crosshair follows the finger while a
+ * vertex is dragged, and vertex placement/closing gives haptic feedback.
+ *
  * All coordinates are normalized [0..1] relative to the displayed image area
  * (width/height props), matching the shared PolygonPoint contract.
  */
-import React, { useMemo, useRef } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { PanResponder, StyleSheet, View } from 'react-native';
 import Svg, { Circle, Line, Polygon, Polyline } from 'react-native-svg';
+import Animated, { ZoomIn } from 'react-native-reanimated';
+import * as Haptics from 'expo-haptics';
 import type { PolygonPoint } from '@/shared';
 
 export interface AnnotatorPolygon {
@@ -53,6 +59,9 @@ export function PolygonAnnotator({
   onPolygonsChange,
   onReferenceLineChange,
 }: Props) {
+  // Crosshair position while dragging a vertex (display px).
+  const [dragPos, setDragPos] = useState<{ x: number; y: number } | null>(null);
+
   // Refs so the PanResponder (created once) always sees current values.
   const stateRef = useRef({ mode, polygons, activePolygonId, referenceLine, width, height });
   stateRef.current = { mode, polygons, activePolygonId, referenceLine, width, height };
@@ -80,6 +89,7 @@ export function PolygonAnnotator({
 
           if (s.mode === 'reference') {
             gestureRef.current.kind = 'reference';
+            void Haptics.selectionAsync();
             const p = toNorm(locationX, locationY, s.width, s.height);
             changeRef.current.onReferenceLineChange?.({ a: p, b: p });
             return;
@@ -111,6 +121,7 @@ export function PolygonAnnotator({
               b: toNorm(locationX, locationY, s.width, s.height),
             });
           } else if (g.kind === 'dragVertex' && g.polygonId != null && g.vertexIndex != null) {
+            setDragPos({ x: locationX, y: locationY });
             const next = s.polygons.map((p) =>
               p.id === g.polygonId
                 ? {
@@ -124,7 +135,11 @@ export function PolygonAnnotator({
             changeRef.current.onPolygonsChange(next);
           }
         },
+        onPanResponderTerminate: () => {
+          setDragPos(null);
+        },
         onPanResponderRelease: (evt) => {
+          setDragPos(null);
           const s = stateRef.current;
           const g = gestureRef.current;
           if (s.mode !== 'polygon' || g.kind === 'reference') return;
@@ -139,6 +154,7 @@ export function PolygonAnnotator({
             const fx = active.points[0].x * s.width;
             const fy = active.points[0].y * s.height;
             if (Math.hypot(fx - locationX, fy - locationY) <= GRAB_RADIUS) {
+              void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
               changeRef.current.onPolygonsChange(
                 s.polygons.map((p) => (p.id === active.id ? { ...p, closed: true } : p)),
               );
@@ -146,6 +162,7 @@ export function PolygonAnnotator({
             }
           }
           // Otherwise append a vertex.
+          void Haptics.selectionAsync();
           const pt = toNorm(locationX, locationY, s.width, s.height);
           changeRef.current.onPolygonsChange(
             s.polygons.map((p) => (p.id === active.id ? { ...p, points: [...p.points, pt] } : p)),
@@ -155,6 +172,8 @@ export function PolygonAnnotator({
     [],
   );
 
+  const activePoly = polygons.find((p) => p.id === activePolygonId) ?? null;
+
   return (
     <View style={[styles.wrap, { width, height }]} {...panResponder.panHandlers}>
       <Svg width={width} height={height} pointerEvents="none">
@@ -163,6 +182,14 @@ export function PolygonAnnotator({
           const isActive = poly.id === activePolygonId;
           return (
             <React.Fragment key={poly.id}>
+              {/* soft glow behind the active polygon */}
+              {isActive && poly.points.length >= 2 ? (
+                poly.closed ? (
+                  <Polygon points={pts} fill="none" stroke={`${poly.color}44`} strokeWidth={9} />
+                ) : (
+                  <Polyline points={pts} fill="none" stroke={`${poly.color}44`} strokeWidth={9} />
+                )
+              ) : null}
               {poly.closed ? (
                 <Polygon
                   points={pts}
@@ -179,18 +206,6 @@ export function PolygonAnnotator({
                   strokeDasharray="6 4"
                 />
               )}
-              {isActive &&
-                poly.points.map((p, i) => (
-                  <Circle
-                    key={i}
-                    cx={p.x * width}
-                    cy={p.y * height}
-                    r={i === 0 && !poly.closed ? VERTEX_R + 2 : VERTEX_R}
-                    fill={i === 0 && !poly.closed ? poly.color : `${poly.color}CC`}
-                    stroke="#0B1220"
-                    strokeWidth={2}
-                  />
-                ))}
             </React.Fragment>
           );
         })}
@@ -209,7 +224,40 @@ export function PolygonAnnotator({
             <Circle cx={referenceLine.b.x * width} cy={referenceLine.b.y * height} r={6} fill="#38BDF8" />
           </>
         ) : null}
+        {/* crosshair feedback while dragging a vertex */}
+        {dragPos ? (
+          <>
+            <Line x1={0} y1={dragPos.y} x2={width} y2={dragPos.y} stroke="#FFFFFF66" strokeWidth={1} />
+            <Line x1={dragPos.x} y1={0} x2={dragPos.x} y2={height} stroke="#FFFFFF66" strokeWidth={1} />
+          </>
+        ) : null}
       </Svg>
+
+      {/* Active-polygon vertices as animated dots (spring drop-in). */}
+      {activePoly
+        ? activePoly.points.map((p, i) => {
+            const isFirstOpen = i === 0 && !activePoly.closed;
+            const r = isFirstOpen ? VERTEX_R + 2 : VERTEX_R;
+            return (
+              <Animated.View
+                key={`${activePoly.id}_${i}`}
+                entering={ZoomIn.springify().damping(12).stiffness(220)}
+                pointerEvents="none"
+                style={[
+                  styles.vertex,
+                  {
+                    left: p.x * width - r,
+                    top: p.y * height - r,
+                    width: r * 2,
+                    height: r * 2,
+                    borderRadius: r,
+                    backgroundColor: isFirstOpen ? activePoly.color : `${activePoly.color}CC`,
+                  },
+                ]}
+              />
+            );
+          })
+        : null}
     </View>
   );
 }
@@ -228,4 +276,9 @@ export function referenceLineLength(line: ReferenceLine): number {
 
 const styles = StyleSheet.create({
   wrap: { position: 'absolute', top: 0, left: 0 },
+  vertex: {
+    position: 'absolute',
+    borderWidth: 2,
+    borderColor: '#0B1220',
+  },
 });

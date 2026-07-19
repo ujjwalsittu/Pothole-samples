@@ -1,16 +1,23 @@
 /**
  * Google Drive export via a service account. Requires
  * GOOGLE_SERVICE_ACCOUNT_JSON (path to the key file) and DRIVE_FOLDER_ID.
+ * Uploads a bundle ('training' | 'raw') built by the exporter into a dated
+ * subfolder, preserving the bundle's folder structure. Media is read through
+ * the storage driver (local or S3).
  */
 import fs from 'node:fs';
 import { Readable } from 'node:stream';
 import { google, type drive_v3 } from 'googleapis';
-import type { MediaType } from '@pothole/shared';
 import { config } from '../config';
-import { collectAcceptedExportItems } from './exporter';
+import { buildBundle, type BundleName } from './exporter';
+import { openMediaStream } from './storage';
 
 export function driveConfigured(): boolean {
-  return Boolean(config.googleServiceAccountJson && config.driveFolderId && fs.existsSync(config.googleServiceAccountJson));
+  return Boolean(
+    config.googleServiceAccountJson &&
+      config.driveFolderId &&
+      fs.existsSync(config.googleServiceAccountJson),
+  );
 }
 
 function driveClient(): drive_v3.Drive {
@@ -45,46 +52,53 @@ async function uploadFile(
   });
 }
 
-export async function exportAcceptedToDrive(
-  mediaType: MediaType | 'all',
-): Promise<{ folderId: string; folderLink: string; samples: number }> {
+export async function exportBundleToDrive(
+  bundle: BundleName,
+): Promise<{ folderId: string; folderLink: string; files: number; skipped: number }> {
   const drive = driveClient();
   const stamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 16);
-  const rootId = await createFolder(drive, `pothole-export-${stamp}`, config.driveFolderId);
+  const rootId = await createFolder(drive, `pothole-${bundle}-${stamp}`, config.driveFolderId);
 
-  const subfolderIds = new Map<string, string>(); // "photos/<id>" -> folderId
-  const typeFolderIds = new Map<string, string>(); // "photos" | "videos" -> folderId
+  // path ("images", "labels/coco", ...) -> folder id; '' = root
+  const folderIds = new Map<string, string>([['', rootId]]);
+  const ensureFolder = async (dirPath: string): Promise<string> => {
+    const existing = folderIds.get(dirPath);
+    if (existing) return existing;
+    const parts = dirPath.split('/');
+    const parentId = await ensureFolder(parts.slice(0, -1).join('/'));
+    const id = await createFolder(drive, parts[parts.length - 1], parentId);
+    folderIds.set(dirPath, id);
+    return id;
+  };
 
-  const items = await collectAcceptedExportItems(mediaType);
-  for (const item of items) {
-    const [typeDir, sampleId] = item.dir.replace(/\/$/, '').split('/');
-    let typeFolderId = typeFolderIds.get(typeDir);
-    if (!typeFolderId) {
-      typeFolderId = await createFolder(drive, typeDir, rootId);
-      typeFolderIds.set(typeDir, typeFolderId);
-    }
-    let sampleFolderId = subfolderIds.get(item.dir);
-    if (!sampleFolderId) {
-      sampleFolderId = await createFolder(drive, sampleId, typeFolderId);
-      subfolderIds.set(item.dir, sampleFolderId);
-    }
-    if (item.mediaAbsPath) {
-      await uploadFile(
-        drive,
-        sampleFolderId,
-        item.mediaFileName,
-        fs.createReadStream(item.mediaAbsPath),
-        'application/octet-stream',
-      );
-    }
-    for (const jf of item.jsonFiles) {
-      await uploadFile(drive, sampleFolderId, jf.name, Readable.from([jf.content]), 'application/json');
+  const files = await buildBundle(bundle);
+  let uploaded = 0;
+  let skipped = 0;
+  for (const file of files) {
+    const slash = file.name.lastIndexOf('/');
+    const dirPath = slash === -1 ? '' : file.name.slice(0, slash);
+    const baseName = slash === -1 ? file.name : file.name.slice(slash + 1);
+    const parentId = await ensureFolder(dirPath);
+
+    if (file.kind === 'text') {
+      const mime = baseName.endsWith('.json') ? 'application/json' : 'text/plain';
+      await uploadFile(drive, parentId, baseName, Readable.from([file.content]), mime);
+      uploaded += 1;
+    } else {
+      const media = await openMediaStream(file.relPath, file.storedOn);
+      if (!media?.stream) {
+        skipped += 1;
+        continue;
+      }
+      await uploadFile(drive, parentId, baseName, media.stream, 'application/octet-stream');
+      uploaded += 1;
     }
   }
 
   return {
     folderId: rootId,
     folderLink: `https://drive.google.com/drive/folders/${rootId}`,
-    samples: items.length,
+    files: uploaded,
+    skipped,
   };
 }

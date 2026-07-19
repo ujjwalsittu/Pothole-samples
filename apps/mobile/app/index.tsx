@@ -4,6 +4,7 @@ import { useRouter } from 'expo-router';
 import { Logo } from '@/components/Logo';
 import { BrandFooter } from '@/components/BrandFooter';
 import { useAuth } from '@/auth/AuthContext';
+import { hasSeenWalkthrough } from '@/onboarding/flags';
 import { colors, font, spacing } from '@/theme';
 
 const MIN_SPLASH_MS = 1400;
@@ -52,7 +53,10 @@ export default function SplashRoute() {
           router.replace('/(auth)/pending');
           break;
         case 'approved':
-          router.replace('/(tabs)/dashboard');
+          // First-time users get the walkthrough before the tabs.
+          void hasSeenWalkthrough().then((seen) => {
+            router.replace(seen ? '/(tabs)/dashboard' : '/walkthrough');
+          });
           break;
       }
     }, wait);

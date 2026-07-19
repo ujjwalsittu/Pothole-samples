@@ -21,6 +21,11 @@ export const config = {
   adminEmail: env('ADMIN_EMAIL'),
 
   storageDir: path.resolve(env('STORAGE_DIR', './uploads')),
+  storageDriver: (env('STORAGE_DRIVER', 'local') === 's3' ? 's3' : 'local') as 'local' | 's3',
+  s3Bucket: env('S3_BUCKET'),
+  s3Region: env('S3_REGION', 'ap-south-1'),
+  /** Optional custom endpoint (MinIO etc.); enables forcePathStyle. */
+  s3Endpoint: env('S3_ENDPOINT'),
 
   googleServiceAccountJson: env('GOOGLE_SERVICE_ACCOUNT_JSON'),
   driveFolderId: env('DRIVE_FOLDER_ID'),

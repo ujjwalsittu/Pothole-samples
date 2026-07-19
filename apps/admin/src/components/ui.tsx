@@ -37,22 +37,20 @@ export function ErrorState({ message, onRetry }: { message: string; onRetry?: ()
   );
 }
 
-export function Chip({
-  children,
-  tone = 'neutral',
-}: {
-  children: ReactNode;
-  tone?: 'neutral' | 'good' | 'bad' | 'warn' | 'accent' | 'info';
-}) {
+export type ChipTone = 'neutral' | 'good' | 'bad' | 'warn' | 'accent' | 'info' | 'teal';
+
+export function Chip({ children, tone = 'neutral' }: { children: ReactNode; tone?: ChipTone }) {
   return <span className={`chip chip-${tone}`}>{children}</span>;
 }
 
-export function stateTone(state: string): 'neutral' | 'good' | 'bad' | 'warn' | 'accent' | 'info' {
+export function stateTone(state: string): ChipTone {
   switch (state) {
     case 'accepted':
     case 'approved':
     case 'settled':
       return 'good';
+    case 'partially_accepted':
+      return 'teal';
     case 'rejected':
     case 'auto_rejected':
     case 'suspended':
@@ -66,6 +64,10 @@ export function stateTone(state: string): 'neutral' | 'good' | 'bad' | 'warn' | 
   }
 }
 
+export function annotationStatusTone(status: string): ChipTone {
+  return status === 'accepted' ? 'good' : status === 'rejected' ? 'bad' : 'warn';
+}
+
 export function StatCard({
   label,
   value,
@@ -75,7 +77,7 @@ export function StatCard({
   label: string;
   value: ReactNode;
   hint?: string;
-  tone?: 'accent' | 'good' | 'bad' | 'warn';
+  tone?: 'accent' | 'good' | 'bad' | 'warn' | 'teal';
 }) {
   return (
     <div className="card stat-card">

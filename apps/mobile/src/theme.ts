@@ -12,6 +12,7 @@ export const colors = {
   textDim: '#94A3B8',
   textFaint: '#64748B',
   success: '#22C55E',
+  teal: '#2DD4BF',
   danger: '#EF4444',
   warning: '#FBBF24',
   info: '#38BDF8',

@@ -108,7 +108,11 @@ export function completeSample(sampleId: string): Promise<Sample> {
   return api<Sample>(`/samples/${sampleId}/complete`, { method: 'POST' });
 }
 
-export type AnnotationUpload = Omit<Annotation, 'id' | 'sampleId'>;
+/**
+ * Client-side annotation payload. `status` (always starts 'pending') and
+ * `createdBy` (always 'collector' for uploads) are set by the server.
+ */
+export type AnnotationUpload = Omit<Annotation, 'id' | 'sampleId' | 'status' | 'createdBy'>;
 
 export function postAnnotations(sampleId: string, annotations: AnnotationUpload[]): Promise<{ count: number }> {
   return api<{ count: number }>(`/samples/${sampleId}/annotations`, {

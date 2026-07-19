@@ -18,6 +18,7 @@ import {
   type ReferenceLine,
 } from '@/components/PolygonAnnotator';
 import { Button } from '@/components/Button';
+import { CoachMark, useCoachMark } from '@/components/CoachMark';
 import { clearCapture, getPhotoCapture, isOfflineMode } from '@/capture/session';
 import { uploadManager } from '@/upload/manager';
 import type { AnnotationUpload } from '@/api/endpoints';
@@ -61,6 +62,7 @@ export default function AnnotatePhotoScreen() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const coach = useCoachMark('coach_annotator_v1');
 
   // Aspect-fit the photo into the available width (capped height).
   const display = useMemo(() => {
@@ -337,6 +339,12 @@ export default function AnnotatePhotoScreen() {
           </View>
         )}
       </ScrollView>
+
+      <CoachMark
+        coach={coach}
+        title="Annotating your photo"
+        body="First drag a line across the visible road width and confirm the real width — that calibrates the size estimates. Then tap around each pothole to draw a polygon, close it, and pick a label."
+      />
     </SafeAreaView>
   );
 }

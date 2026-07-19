@@ -8,6 +8,7 @@ import { BrandFooter } from '@/components/BrandFooter';
 import { useAuth } from '@/auth/AuthContext';
 import { patchMe } from '@/api/endpoints';
 import { ApiError } from '@/api/client';
+import { resetWalkthrough } from '@/onboarding/flags';
 import { colors, font, radius, spacing } from '@/theme';
 import { DEFAULT_PACKAGE } from '@/shared';
 
@@ -149,6 +150,17 @@ export default function ProfileScreen() {
           {DEFAULT_PACKAGE.name}: {DEFAULT_PACKAGE.videoQuota} videos OR {DEFAULT_PACKAGE.photoQuota}{' '}
           photos {'→'} ₹{DEFAULT_PACKAGE.payoutInr}
         </Text>
+      </View>
+
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>Help</Text>
+        <Button
+          title="Replay walkthrough"
+          variant="secondary"
+          onPress={() => {
+            void resetWalkthrough().finally(() => router.push('/walkthrough'));
+          }}
+        />
       </View>
 
       <Button

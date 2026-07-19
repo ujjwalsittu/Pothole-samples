@@ -1,8 +1,8 @@
-import { Router } from 'express';
+import { Router, type Response } from 'express';
 import archiver from 'archiver';
 import multer from 'multer';
 import { z } from 'zod';
-import type { MediaType } from '@pothole/shared';
+import { coordinateAtVideoTime, type GpsPoint, type MediaType } from '@pothole/shared';
 import { query, withTransaction } from '../db/pool';
 import {
   rowToAnnotation,
@@ -14,9 +14,9 @@ import { ApiError, asyncH, ok } from '../http';
 import { requireRole } from '../middleware/auth';
 import { insertLedgerEntry, balanceSummary } from '../services/ledger';
 import { mail } from '../services/mail';
-import { collectAcceptedExportItems } from '../services/exporter';
-import { driveConfigured, exportAcceptedToDrive } from '../services/drive';
-import { extForMime, saveBuffer } from '../services/storage';
+import { buildBundle, buildRawBundle, type BundleFile } from '../services/exporter';
+import { driveConfigured, exportBundleToDrive } from '../services/drive';
+import { extForMime, openMediaStream, saveBuffer } from '../services/storage';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -141,9 +141,202 @@ adminRouter.get(
   }),
 );
 
+/* --------------------------- annotation CRUD --------------------------- */
+
+/** States in which an admin may create/edit/delete annotations. */
+const ANNOTATABLE_STATES = ['pending_review', 'uploaded', 'accepted', 'partially_accepted'];
+
+const estimateSchema = z
+  .object({
+    roadType: z.string(),
+    roadWidthM: z.number().nullable(),
+    diameterM: z.number().nullable(),
+    areaM2: z.number().nullable(),
+    assumedDepthM: z.number(),
+    volumeM3: z.number().nullable(),
+    fillMaterial: z.string(),
+    materialKg: z.number().nullable(),
+  })
+  .strict();
+
+const polygonSchema = z
+  .array(z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1) }))
+  .min(3);
+
+async function loadTrack(
+  sampleId: string,
+): Promise<{ points: GpsPoint[]; recordingStartMs: number } | null> {
+  const { rows } = await query<{ recording_start_ms: string; points: GpsPoint[] }>(
+    'SELECT recording_start_ms, points FROM gps_tracks WHERE sample_id = $1',
+    [sampleId],
+  );
+  return rows[0]
+    ? { points: rows[0].points, recordingStartMs: Number(rows[0].recording_start_ms) }
+    : null;
+}
+
+/** Interpolate an annotation coordinate for a video sample. */
+async function coordForVideo(sampleId: string, videoTimeSec: number): Promise<{ lat: number; lng: number }> {
+  const track = await loadTrack(sampleId);
+  if (!track) throw new ApiError(422, 'TRACK_REQUIRED', 'This video sample has no GPS track');
+  const coord = coordinateAtVideoTime(track.points, track.recordingStartMs, videoTimeSec);
+  if (!coord) throw new ApiError(422, 'TRACK_REQUIRED', 'GPS track is empty');
+  return coord;
+}
+
+/** pothole_count = number of non-rejected annotations. */
+async function refreshPotholeCount(sampleId: string): Promise<number> {
+  const { rows } = await query<{ pothole_count: number }>(
+    `UPDATE samples SET pothole_count =
+       (SELECT COUNT(*) FROM annotations WHERE sample_id = $1 AND status <> 'rejected')
+     WHERE id = $1 RETURNING pothole_count`,
+    [sampleId],
+  );
+  return Number(rows[0]?.pothole_count ?? 0);
+}
+
 /**
- * POST /admin/samples/:id/review — accept (credit earning) or reject
- * (permanent; a new sample is required). Idempotent via ALREADY_REVIEWED.
+ * POST /admin/samples/:id/annotations — admin-created annotation
+ * (created_by 'admin', pre-accepted). Works for photo and video samples.
+ */
+adminRouter.post(
+  '/samples/:id/annotations',
+  asyncH(async (req, res) => {
+    assertUuid(req.params.id, 'SAMPLE_NOT_FOUND', 'Sample');
+    const body = z
+      .object({
+        label: z.string().trim().min(1),
+        polygon: polygonSchema,
+        videoTimeSec: z.number().nonnegative().nullish(),
+        estimate: estimateSchema.nullish(),
+      })
+      .parse(req.body ?? {});
+
+    const { rows } = await query('SELECT * FROM samples WHERE id = $1', [req.params.id]);
+    const sample = rows[0];
+    if (!sample) throw new ApiError(404, 'SAMPLE_NOT_FOUND', 'Sample not found');
+    if (!ANNOTATABLE_STATES.includes(sample.state)) {
+      throw new ApiError(409, 'SAMPLE_LOCKED', `Sample in state ${sample.state} cannot be annotated`);
+    }
+
+    const isVideo = sample.media_type === 'video';
+    let lat = Number(sample.lat);
+    let lng = Number(sample.lng);
+    if (isVideo) {
+      if (body.videoTimeSec == null) {
+        throw new ApiError(400, 'VIDEO_TIME_REQUIRED', 'videoTimeSec is required for video annotations');
+      }
+      ({ lat, lng } = await coordForVideo(sample.id, body.videoTimeSec));
+    }
+
+    const ins = await query(
+      `INSERT INTO annotations (sample_id, label, polygon, video_time_sec, lat, lng, estimate, status, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'accepted','admin') RETURNING *`,
+      [
+        sample.id,
+        body.label,
+        JSON.stringify(body.polygon),
+        isVideo ? body.videoTimeSec : null,
+        lat,
+        lng,
+        body.estimate ? JSON.stringify(body.estimate) : null,
+      ],
+    );
+    const potholeCount = await refreshPotholeCount(sample.id);
+    ok(res, { annotation: rowToAnnotation(ins.rows[0]), potholeCount }, 201);
+  }),
+);
+
+/**
+ * PATCH /admin/annotations/:annotationId — edit label/polygon/videoTimeSec/
+ * status/estimate. Changing videoTimeSec recomputes lat/lng from the track.
+ */
+adminRouter.patch(
+  '/annotations/:annotationId',
+  asyncH(async (req, res) => {
+    assertUuid(req.params.annotationId, 'ANNOTATION_NOT_FOUND', 'Annotation');
+    const body = z
+      .object({
+        label: z.string().trim().min(1).optional(),
+        polygon: polygonSchema.optional(),
+        videoTimeSec: z.number().nonnegative().optional(),
+        status: z.enum(['pending', 'accepted', 'rejected']).optional(),
+        estimate: estimateSchema.nullish(),
+      })
+      .parse(req.body ?? {});
+
+    const { rows } = await query(
+      `SELECT a.*, s.state AS sample_state, s.media_type AS sample_media_type
+       FROM annotations a JOIN samples s ON s.id = a.sample_id
+       WHERE a.id = $1`,
+      [req.params.annotationId],
+    );
+    const existing = rows[0];
+    if (!existing) throw new ApiError(404, 'ANNOTATION_NOT_FOUND', 'Annotation not found');
+    if (!ANNOTATABLE_STATES.includes(existing.sample_state)) {
+      throw new ApiError(409, 'SAMPLE_LOCKED', `Sample in state ${existing.sample_state} cannot be annotated`);
+    }
+
+    let lat: number | null = null;
+    let lng: number | null = null;
+    if (body.videoTimeSec != null) {
+      if (existing.sample_media_type !== 'video') {
+        throw new ApiError(400, 'NOT_A_VIDEO', 'videoTimeSec only applies to video samples');
+      }
+      ({ lat, lng } = await coordForVideo(existing.sample_id, body.videoTimeSec));
+    }
+
+    const upd = await query(
+      `UPDATE annotations SET
+         label          = COALESCE($2, label),
+         polygon        = COALESCE($3, polygon),
+         video_time_sec = COALESCE($4, video_time_sec),
+         status         = COALESCE($5, status),
+         estimate       = COALESCE($6, estimate),
+         lat            = COALESCE($7, lat),
+         lng            = COALESCE($8, lng)
+       WHERE id = $1 RETURNING *`,
+      [
+        existing.id,
+        body.label ?? null,
+        body.polygon ? JSON.stringify(body.polygon) : null,
+        body.videoTimeSec ?? null,
+        body.status ?? null,
+        body.estimate ? JSON.stringify(body.estimate) : null,
+        lat,
+        lng,
+      ],
+    );
+    const potholeCount = await refreshPotholeCount(existing.sample_id);
+    ok(res, { annotation: rowToAnnotation(upd.rows[0]), potholeCount });
+  }),
+);
+
+/** DELETE /admin/annotations/:annotationId */
+adminRouter.delete(
+  '/annotations/:annotationId',
+  asyncH(async (req, res) => {
+    assertUuid(req.params.annotationId, 'ANNOTATION_NOT_FOUND', 'Annotation');
+    const { rows } = await query(
+      `SELECT a.id, a.sample_id, s.state AS sample_state
+       FROM annotations a JOIN samples s ON s.id = a.sample_id WHERE a.id = $1`,
+      [req.params.annotationId],
+    );
+    const existing = rows[0];
+    if (!existing) throw new ApiError(404, 'ANNOTATION_NOT_FOUND', 'Annotation not found');
+    if (!ANNOTATABLE_STATES.includes(existing.sample_state)) {
+      throw new ApiError(409, 'SAMPLE_LOCKED', `Sample in state ${existing.sample_state} cannot be annotated`);
+    }
+    await query('DELETE FROM annotations WHERE id = $1', [existing.id]);
+    const potholeCount = await refreshPotholeCount(existing.sample_id);
+    ok(res, { deleted: true, potholeCount });
+  }),
+);
+
+/**
+ * POST /admin/samples/:id/review — accept / partially accept (both credit the
+ * SAME full per-sample earning) or reject (permanent; a new sample is
+ * required). Idempotent via ALREADY_REVIEWED.
  */
 adminRouter.post(
   '/samples/:id/review',
@@ -151,7 +344,10 @@ adminRouter.post(
     assertUuid(req.params.id, 'SAMPLE_NOT_FOUND', 'Sample');
     const admin = req.user!;
     const body = z
-      .object({ decision: z.enum(['accepted', 'rejected']), reason: z.string().trim().optional() })
+      .object({
+        decision: z.enum(['accepted', 'partially_accepted', 'rejected']),
+        reason: z.string().trim().optional(),
+      })
       .parse(req.body ?? {});
     if (body.decision === 'rejected' && !body.reason) {
       throw new ApiError(400, 'REASON_REQUIRED', 'A reason is required when rejecting a sample');
@@ -161,7 +357,7 @@ adminRouter.post(
       const s = await client.query('SELECT * FROM samples WHERE id = $1 FOR UPDATE', [req.params.id]);
       const sample = s.rows[0];
       if (!sample) throw new ApiError(404, 'SAMPLE_NOT_FOUND', 'Sample not found');
-      if (sample.reviewed_at || ['accepted', 'rejected'].includes(sample.state)) {
+      if (sample.reviewed_at || ['accepted', 'partially_accepted', 'rejected'].includes(sample.state)) {
         throw new ApiError(409, 'ALREADY_REVIEWED', 'This sample has already been reviewed');
       }
       if (sample.state !== 'pending_review') {
@@ -171,8 +367,41 @@ adminRouter.post(
       const u = await client.query('SELECT * FROM users WHERE id = $1', [sample.user_id]);
       const collector = rowToUser(u.rows[0]);
 
-      let amountInr = 0;
+      // Per-annotation statuses drive the partial-accept rules.
+      const annStats = await client.query<{ status: string }>(
+        'SELECT status FROM annotations WHERE sample_id = $1 FOR UPDATE',
+        [sample.id],
+      );
+      const counts = { pending: 0, accepted: 0, rejected: 0 };
+      for (const a of annStats.rows) counts[a.status as keyof typeof counts] += 1;
+
       if (body.decision === 'accepted') {
+        await client.query(
+          `UPDATE annotations SET status = 'accepted' WHERE sample_id = $1 AND status = 'pending'`,
+          [sample.id],
+        );
+      } else if (body.decision === 'partially_accepted') {
+        // Requires a real mix: at least one approved annotation, and at least
+        // one that is not approved (rejected already, or pending — which gets
+        // marked rejected now). Otherwise use accepted / rejected.
+        if (counts.accepted < 1 || counts.pending + counts.rejected < 1) {
+          throw new ApiError(
+            400,
+            'PARTIAL_REQUIRES_MIX',
+            'Partial acceptance needs at least one accepted annotation and at least one rejected/pending annotation',
+          );
+        }
+        await client.query(
+          `UPDATE annotations SET status = 'rejected' WHERE sample_id = $1 AND status = 'pending'`,
+          [sample.id],
+        );
+      }
+
+      // POLICY: accepted and partially_accepted grant the SAME full
+      // per-sample credit (payout/quota). Adjust here if partial payouts
+      // should ever be prorated.
+      let amountInr = 0;
+      if (body.decision === 'accepted' || body.decision === 'partially_accepted') {
         const p = await client.query(
           'SELECT video_quota, photo_quota, payout_inr FROM packages WHERE code = $1',
           [collector.packageCode],
@@ -186,7 +415,10 @@ adminRouter.post(
           type: 'earning',
           amountInr,
           sampleId: sample.id,
-          note: `Earning for accepted ${sample.media_type} sample`,
+          note:
+            body.decision === 'accepted'
+              ? `Earning for accepted ${sample.media_type} sample`
+              : `Earning for partially accepted ${sample.media_type} sample`,
         });
       }
 
@@ -194,13 +426,14 @@ adminRouter.post(
         `UPDATE samples SET
            state = $2,
            rejection_reason = $3,
+           pothole_count = (SELECT COUNT(*) FROM annotations WHERE sample_id = $1 AND status <> 'rejected'),
            reviewed_by = $4,
            reviewed_at = now()
          WHERE id = $1 RETURNING *`,
         [
           sample.id,
           body.decision,
-          body.decision === 'rejected' ? body.reason ?? null : null,
+          body.decision === 'accepted' ? null : body.reason ?? null,
           admin.id,
         ],
       );
@@ -209,6 +442,13 @@ adminRouter.post(
 
     if (body.decision === 'accepted') {
       void mail.sampleAccepted(
+        result.collector.email,
+        result.collector.fullName,
+        result.sample.id,
+        result.amountInr,
+      );
+    } else if (body.decision === 'partially_accepted') {
+      void mail.samplePartiallyAccepted(
         result.collector.email,
         result.collector.fullName,
         result.sample.id,
@@ -346,36 +586,63 @@ adminRouter.post(
 
 const mediaTypeSchema = z.enum(['photo', 'video', 'all']).default('all');
 
+/** Stream a bundle as a zip. Media bytes are streamed verbatim via the driver. */
+async function streamZipBundle(res: Response, filename: string, files: BundleFile[]): Promise<void> {
+  res.status(200);
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+
+  const archive = archiver('zip', { zlib: { level: 6 } });
+  archive.on('error', (err) => {
+    console.error('[export] archive error:', err);
+    res.destroy(err);
+  });
+  archive.pipe(res);
+
+  for (const file of files) {
+    if (file.kind === 'text') {
+      archive.append(file.content, { name: file.name });
+    } else {
+      const media = await openMediaStream(file.relPath, file.storedOn);
+      if (media?.stream) archive.append(media.stream, { name: file.name });
+    }
+  }
+  await archive.finalize();
+}
+
+const today = (): string => new Date().toISOString().slice(0, 10);
+
+/** Legacy export (back-compat): 'accepted' samples only, raw layout. */
 adminRouter.get(
   '/export/accepted.zip',
   asyncH(async (req, res) => {
     const mediaType = mediaTypeSchema.parse(req.query.mediaType ?? 'all') as MediaType | 'all';
-    const items = await collectAcceptedExportItems(mediaType);
+    const files = await buildRawBundle(['accepted'], mediaType);
+    await streamZipBundle(res, `pothole-accepted-${today()}.zip`, files);
+  }),
+);
 
-    res.status(200);
-    res.setHeader('Content-Type', 'application/zip');
-    res.setHeader(
-      'Content-Disposition',
-      `attachment; filename="pothole-accepted-${new Date().toISOString().slice(0, 10)}.zip"`,
-    );
+/**
+ * Training bundle: accepted + partially_accepted, ONLY approved annotations,
+ * NO GPS data anywhere. images/ + labels/{coco,yolo,classes.txt} + videos/.
+ */
+adminRouter.get(
+  '/export/training.zip',
+  asyncH(async (_req, res) => {
+    const files = await buildBundle('training');
+    await streamZipBundle(res, `pothole-training-${today()}.zip`, files);
+  }),
+);
 
-    const archive = archiver('zip', { zlib: { level: 6 } });
-    archive.on('error', (err) => {
-      console.error('[export] archive error:', err);
-      res.destroy(err);
-    });
-    archive.pipe(res);
-
-    for (const item of items) {
-      if (item.mediaAbsPath) {
-        // Media bytes are streamed verbatim — never re-encoded or modified.
-        archive.file(item.mediaAbsPath, { name: `${item.dir}${item.mediaFileName}` });
-      }
-      for (const jf of item.jsonFiles) {
-        archive.append(jf.content, { name: `${item.dir}${jf.name}` });
-      }
-    }
-    await archive.finalize();
+/**
+ * Raw testing bundle: accepted + partially_accepted, unmodified media + full
+ * GPS (meta/track) + all annotations with statuses.
+ */
+adminRouter.get(
+  '/export/raw.zip',
+  asyncH(async (_req, res) => {
+    const files = await buildBundle('raw');
+    await streamZipBundle(res, `pothole-raw-${today()}.zip`, files);
   }),
 );
 
@@ -389,10 +656,10 @@ adminRouter.post(
         'Google Drive export requires GOOGLE_SERVICE_ACCOUNT_JSON and DRIVE_FOLDER_ID',
       );
     }
-    const mediaType = mediaTypeSchema.parse(
-      (req.body?.mediaType as string | undefined) ?? req.query.mediaType ?? 'all',
-    ) as MediaType | 'all';
-    const result = await exportAcceptedToDrive(mediaType);
+    const body = z
+      .object({ bundle: z.enum(['training', 'raw']).default('raw') })
+      .parse(req.body ?? {});
+    const result = await exportBundleToDrive(body.bundle);
     ok(res, result);
   }),
 );
