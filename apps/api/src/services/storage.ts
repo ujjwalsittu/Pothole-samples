@@ -75,3 +75,39 @@ export function fileExists(relPath: string): boolean {
 export function readStream(relPath: string, opts?: { start?: number; end?: number }): fs.ReadStream {
   return fs.createReadStream(absPath(relPath), opts);
 }
+
+/**
+ * Content hash matching the mobile client's scheme (apps/mobile/src/upload/hash.ts).
+ * expo-crypto cannot stream, so the client hashes the base64 representation:
+ *  - size <= 4 MB: sha256(base64(fileBytes))
+ *  - larger:       sha256(concat(sha256hex(base64(chunk_i)))) over 4 MB raw chunks
+ * All digests are lowercase hex. This — not a raw-byte sha256 — is the value
+ * stored in samples.sha256 and used for integrity + exact-dup checks.
+ */
+const HASH_CHUNK_BYTES = 4 * 1024 * 1024;
+
+export async function contentHashOfFile(relPath: string): Promise<string> {
+  const crypto = await import('node:crypto');
+  const abs = absPath(relPath);
+  const { size } = await fsp.stat(abs);
+  const sha256Hex = (s: string) => crypto.createHash('sha256').update(s, 'utf8').digest('hex');
+
+  const fh = await fsp.open(abs, 'r');
+  try {
+    if (size <= HASH_CHUNK_BYTES) {
+      const buf = Buffer.alloc(size);
+      await fh.read(buf, 0, size, 0);
+      return sha256Hex(buf.toString('base64'));
+    }
+    const chunkDigests: string[] = [];
+    for (let pos = 0; pos < size; pos += HASH_CHUNK_BYTES) {
+      const len = Math.min(HASH_CHUNK_BYTES, size - pos);
+      const buf = Buffer.alloc(len);
+      await fh.read(buf, 0, len, pos);
+      chunkDigests.push(sha256Hex(buf.toString('base64')));
+    }
+    return sha256Hex(chunkDigests.join(''));
+  } finally {
+    await fh.close();
+  }
+}

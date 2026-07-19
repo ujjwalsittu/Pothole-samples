@@ -1,0 +1,78 @@
+{
+  "expo": {
+    "name": "PotholeCollect",
+    "slug": "pothole-collect",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "potholecollect",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0B1220",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "cover",
+      "backgroundColor": "#0B1220"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.threemates.potholecollect",
+      "infoPlist": {
+        "NSCameraUsageDescription": "PotholeCollect uses the camera to capture pothole photos and videos of the road surface.",
+        "NSLocationWhenInUseUsageDescription": "PotholeCollect attaches a precise GPS location to every pothole sample. Samples without an accurate, genuine location are rejected.",
+        "NSMicrophoneUsageDescription": "The microphone is used while recording pothole videos."
+      }
+    },
+    "android": {
+      "package": "com.threemates.potholecollect",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0B1220"
+      },
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.RECORD_AUDIO"
+      ]
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "PotholeCollect uses the camera to capture pothole photos and videos of the road surface.",
+          "microphonePermission": "The microphone is used while recording pothole videos.",
+          "recordAudioAndroid": true
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "PotholeCollect attaches a precise GPS location to every pothole sample. Samples without an accurate, genuine location are rejected."
+        }
+      ],
+      [
+        "expo-av",
+        {
+          "microphonePermission": "The microphone is used while recording pothole videos."
+        }
+      ],
+      [
+        "react-native-auth0",
+        {
+          "domain": "YOUR_TENANT.auth0.com",
+          "customScheme": "potholecollect"
+        }
+      ]
+    ],
+    "extra": {
+      "apiUrl": "https://api.example.com/v1",
+      "auth0Domain": "YOUR_TENANT.auth0.com",
+      "auth0ClientId": "YOUR_AUTH0_CLIENT_ID",
+      "auth0Audience": "https://api.potholecollect.com",
+      "router": {
+        "origin": false
+      }
+    }
+  }
+}

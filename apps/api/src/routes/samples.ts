@@ -1,5 +1,3 @@
-import crypto from 'node:crypto';
-import fs from 'node:fs';
 import express, { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { z } from 'zod';
@@ -22,7 +20,7 @@ import { rowToAnnotation, rowToSample } from '../db/mappers';
 import { ApiError, asyncH, ok } from '../http';
 import { requireApproved, requireUser } from '../middleware/auth';
 import { aHashHex, hammingHex } from '../services/phash';
-import { absPath, fileSize, sampleRelPath, writeChunkAt } from '../services/storage';
+import { absPath, contentHashOfFile, fileSize, sampleRelPath, writeChunkAt } from '../services/storage';
 
 export const samplesRouter = Router();
 
@@ -297,13 +295,9 @@ samplesRouter.post(
       );
     }
 
-    const digest = await new Promise<string>((resolve, reject) => {
-      const hash = crypto.createHash('sha256');
-      const stream = fs.createReadStream(absPath(mediaPath));
-      stream.on('data', (d) => hash.update(d));
-      stream.on('end', () => resolve(hash.digest('hex')));
-      stream.on('error', reject);
-    });
+    // Must mirror the mobile client's base64/composite scheme — see
+    // contentHashOfFile. A raw-byte sha256 would never match what clients send.
+    const digest = await contentHashOfFile(mediaPath);
 
     if (digest.toLowerCase() !== (row!.sha256 as string).toLowerCase()) {
       await query(

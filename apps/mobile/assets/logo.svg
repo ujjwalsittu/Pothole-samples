@@ -1,0 +1,13 @@
+<svg width="320" height="120" viewBox="0 0 320 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- PotholeCollect logo: perspective road with pothole + wordmark -->
+  <rect width="320" height="120" fill="#0B1220"/>
+  <!-- road -->
+  <path d="M46 108 L78 12 L98 12 L130 108 Z" fill="#111A2E" stroke="#F59E0B" stroke-width="5"/>
+  <!-- dashed center line -->
+  <line x1="88" y1="16" x2="88" y2="104" stroke="#F59E0B" stroke-width="4" stroke-dasharray="10 9"/>
+  <!-- pothole -->
+  <ellipse cx="97" cy="76" rx="17" ry="9" fill="#060A14" stroke="#F59E0B" stroke-width="4"/>
+  <!-- wordmark -->
+  <text x="150" y="66" font-family="Helvetica, Arial, sans-serif" font-size="28" font-weight="700" fill="#E5E7EB">Pothole<tspan fill="#F59E0B">Collect</tspan></text>
+  <text x="150" y="90" font-family="Helvetica, Arial, sans-serif" font-size="12" fill="#94A3B8">road data collection</text>
+</svg>
