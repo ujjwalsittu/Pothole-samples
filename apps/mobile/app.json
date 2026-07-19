@@ -66,16 +66,16 @@
       [
         "react-native-auth0",
         {
-          "domain": "YOUR_TENANT.auth0.com",
+          "domain": "tmv-jp.auth0.com",
           "customScheme": "potholecollect"
         }
       ]
     ],
     "extra": {
-      "apiUrl": "https://api.example.com/v1",
-      "auth0Domain": "YOUR_TENANT.auth0.com",
-      "auth0ClientId": "YOUR_AUTH0_CLIENT_ID",
-      "auth0Audience": "https://api.potholecollect.com",
+      "apiUrl": "https://api-potholes.threemates.in",
+      "auth0Domain": "tmv.jp.auth0.com",
+      "auth0ClientId": "qDn3qug1tBxuBDKdAjJhJxBGl60MQhQ4",
+      "auth0Audience": "https://tmv.jp.auth0.com/api/v2/",
       "router": {
         "origin": false
       }
