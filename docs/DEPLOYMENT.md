@@ -1,18 +1,29 @@
-# Deployment Guide — Railway + Mobile Builds
+# Deployment Guide — Railway / AWS Lightsail + Mobile Builds
 
-End-to-end: API + database + admin dashboard on **Railway** with custom
-domains, then the mobile app configured, splash-checked, and built for dev
-and the stores.
+End-to-end: API + database + admin dashboard hosted on **Railway** (§1–2)
+**or AWS Lightsail** (§2b) with custom domains, then the mobile app
+configured, splash-checked, and built for dev and the stores.
+
+**Which host?**
+
+| | Railway | Lightsail |
+|---|---|---|
+| Setup effort | Minutes, no server admin | ~1 hour, you manage a VM |
+| Pricing | Usage-based | Fixed ($12–24/mo instance) |
+| Disk | Ephemeral → **S3 required** | Persistent → local storage OK |
+| OSRM admin panel | External service only | **Fully works** (Docker on-box) |
+| Scaling | Automatic-ish | Manual (bigger instance) |
 
 ---
 
 ## 0. Prerequisites
 
-- A [Railway](https://railway.app) account (Hobby plan works to start)
+- A [Railway](https://railway.app) account **or** an AWS account (for
+  Lightsail)
 - An [Auth0](https://auth0.com) tenant (free tier fine)
 - A [Resend](https://resend.com) account + your sending domain verified
-- An S3-compatible bucket (AWS S3 / Cloudflare R2) — **required on Railway**,
-  see §1.4
+- An S3-compatible bucket (AWS S3 / Cloudflare R2) — **required on Railway**
+  (see §1.4), optional on Lightsail
 - Node 18+, `npm i -g @railway/cli eas-cli` locally
 - A domain you control (example below: `potholes.example.com`)
 
@@ -108,6 +119,154 @@ is needed when they change.
 3. Networking → custom domain `admin.potholes.example.com` (CNAME as in
    §1.3). Add this URL to the API's `CORS_ORIGINS` and to the Auth0 SPA
    app's Allowed Callback/Logout/Web Origins.
+
+---
+
+## 2b. AWS Lightsail (alternative to §1–2)
+
+One Ubuntu VM runs the API, admin dashboard, Postgres, and (optionally)
+OSRM. Persistent disk means `STORAGE_DRIVER=local` is fine, and the
+admin **Services → OSRM** panel works end-to-end because Docker runs
+on-box.
+
+### 2b.1 Instance + networking
+
+1. Lightsail → **Create instance** → Linux, **Ubuntu 24.04**, plan
+   **$12/mo (2 GB RAM)** minimum — take **$24/mo (4 GB)** if you'll run
+   OSRM preprocessing on-box.
+2. Networking tab → **attach a static IP**.
+3. Instance → Networking → IPv4 firewall: keep 22 (SSH) and 80, add
+   **443 (HTTPS)**.
+4. DNS (your provider or Lightsail DNS zone): **A records**
+   `api.potholes.example.com` and `admin.potholes.example.com` → the
+   static IP.
+
+### 2b.2 Server setup (SSH in as `ubuntu`)
+
+```bash
+sudo apt update && sudo apt -y upgrade
+# Node 20
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt -y install nodejs git nginx certbot python3-certbot-nginx
+# Docker (optional — needed only for the OSRM admin panel)
+curl -fsSL https://get.docker.com | sudo sh && sudo usermod -aG docker ubuntu
+
+# PostgreSQL on-box (or use a Lightsail managed database and skip this)
+sudo apt -y install postgresql-16
+sudo -u postgres psql -c "CREATE USER pothole WITH PASSWORD 'CHANGE_ME';"
+sudo -u postgres psql -c "CREATE DATABASE potholes OWNER pothole;"
+```
+
+> Managed alternative: Lightsail → Databases → PostgreSQL; use its
+> connection string as `DATABASE_URL` and skip the on-box install.
+> Managed gives you snapshots/backups for free effort.
+
+### 2b.3 Deploy the platform
+
+```bash
+sudo mkdir -p /opt/pothole /var/lib/pothole/uploads /var/lib/pothole/osrm
+sudo chown -R ubuntu /opt/pothole /var/lib/pothole
+git clone https://github.com/ujjwalsittu/Pothole-samples.git /opt/pothole
+cd /opt/pothole && npm install          # also fetches the bundled ffmpeg
+
+cp apps/api/.env.example apps/api/.env && nano apps/api/.env
+```
+
+Key `.env` values on Lightsail:
+
+```env
+PORT=4000
+DATABASE_URL=postgres://pothole:CHANGE_ME@localhost:5432/potholes
+AUTH0_DOMAIN=your-tenant.auth0.com
+AUTH0_AUDIENCE=https://api.potholes.example.com
+RESEND_API_KEY=...
+MAIL_FROM=PotholeCollect <no-reply@potholes.example.com>
+ADMIN_EMAIL=ujjwal@threemates.tech
+CORS_ORIGINS=https://admin.potholes.example.com
+STORAGE_DRIVER=local
+STORAGE_DIR=/var/lib/pothole/uploads
+OSRM_DATA_DIR=/var/lib/pothole/osrm
+```
+
+Migrate, then install the API as a systemd service:
+
+```bash
+npm run migrate --workspace apps/api
+
+sudo tee /etc/systemd/system/pothole-api.service > /dev/null <<'EOF'
+[Unit]
+Description=PotholeCollect API
+After=network.target postgresql.service
+
+[Service]
+User=ubuntu
+WorkingDirectory=/opt/pothole/apps/api
+ExecStart=/usr/bin/npm run start
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl enable --now pothole-api
+curl -s localhost:4000/api/v1/health     # → { "ok": true, ... }
+```
+
+Build the admin dashboard (Vite envs are build-time):
+
+```bash
+cd /opt/pothole/apps/admin
+cat > .env.production <<'EOF'
+VITE_API_URL=https://api.potholes.example.com
+VITE_AUTH0_DOMAIN=your-tenant.auth0.com
+VITE_AUTH0_CLIENT_ID=<spa client id>
+VITE_AUTH0_AUDIENCE=https://api.potholes.example.com
+EOF
+npm run build      # outputs dist/
+```
+
+### 2b.4 Nginx + TLS (domain mapping)
+
+```bash
+sudo tee /etc/nginx/sites-available/pothole > /dev/null <<'EOF'
+server {
+    listen 80;
+    server_name api.potholes.example.com;
+    # 1 GB videos + slow uploads:
+    client_max_body_size 1100m;
+    proxy_read_timeout 300s;
+    proxy_send_timeout 300s;
+    location / { proxy_pass http://127.0.0.1:4000;
+                 proxy_set_header Host $host;
+                 proxy_set_header X-Forwarded-For $remote_addr; }
+}
+server {
+    listen 80;
+    server_name admin.potholes.example.com;
+    root /opt/pothole/apps/admin/dist;
+    location / { try_files $uri /index.html; }   # SPA fallback
+}
+EOF
+sudo ln -s /etc/nginx/sites-available/pothole /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+
+# TLS for both domains (auto-renews):
+sudo certbot --nginx -d api.potholes.example.com -d admin.potholes.example.com
+```
+
+### 2b.5 Operating it
+
+- **Deploy an update**:
+  `cd /opt/pothole && git pull && npm install && npm run migrate --workspace apps/api && (cd apps/admin && npm run build) && sudo systemctl restart pothole-api`
+- **OSRM**: with Docker installed, the admin **Services** page does
+  everything (download region → preprocess → serve) — no SSH needed
+  after setup. Data lands in `/var/lib/pothole/osrm`.
+- **Backups**: managed DB → automatic snapshots; on-box →
+  `pg_dump potholes | gzip > backup.sql.gz` in a cron; media in
+  `/var/lib/pothole/uploads` should be synced off-box
+  (`aws s3 sync` or restic) — or just use `STORAGE_DRIVER=s3` and skip
+  media backups.
+- **Logs**: `journalctl -u pothole-api -f`.
 
 ---
 
