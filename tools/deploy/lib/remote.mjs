@@ -124,8 +124,14 @@ chown -R ubuntu /opt/pothole /var/lib/pothole
 echo "==> Clone + install"
 if [ ! -d /opt/pothole/.git ]; then
   sudo -u ubuntu -H git clone ${JSON.stringify(cfg.repoUrl)} /opt/pothole
+else
+  # Re-runs must pick up fixes pushed since the first attempt.
+  sudo -u ubuntu -H git -C /opt/pothole pull --ff-only || true
 fi
 cd /opt/pothole
+# Lockfile-faithful, from-scratch install: a previously broken tree must
+# never poison this run.
+sudo -u ubuntu -H rm -rf node_modules apps/api/node_modules packages/shared/node_modules
 sudo -u ubuntu -H npm install
 
 echo "==> API .env"
