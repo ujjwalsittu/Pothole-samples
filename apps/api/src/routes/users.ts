@@ -129,13 +129,48 @@ usersRouter.post(
 );
 
 /** GET /me — 404 USER_NOT_REGISTERED when no row exists yet. Includes the
- * user's full PackageInfo as `package`. */
+ * user's full PackageInfo as `package`.
+ *
+ * PRIMARY-ADMIN WEB BOOTSTRAP: the mobile app registers users via
+ * signup-complete, but the admin dashboard has no signup by design — so the
+ * very first user, or PRIMARY_ADMIN_EMAIL, is auto-provisioned as an
+ * approved owner right here on first login from the web. */
 usersRouter.get(
   '/me',
-  requireUser,
   asyncH(async (req, res) => {
-    const { rows } = await query('SELECT * FROM packages WHERE code = $1', [req.user!.packageCode]);
-    ok(res, { ...req.user!, package: rows[0] ? rowToPackage(rows[0]) : null });
+    let user = req.user ?? null;
+
+    if (!user) {
+      const authInfo = req.authInfo;
+      if (!authInfo) throw new ApiError(401, 'UNAUTHORIZED', 'Not authenticated');
+      const email = authInfo.email ?? null;
+
+      user = await withTransaction(async (client) => {
+        await client.query('LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE');
+        const count = await client.query<{ n: string }>('SELECT COUNT(*) AS n FROM users');
+        const isPrimaryAdmin =
+          Number(count.rows[0].n) === 0 ||
+          (email !== null && email.toLowerCase() === PRIMARY_ADMIN_EMAIL.toLowerCase());
+        if (!isPrimaryAdmin) return null;
+
+        const fullName = email ? email.split('@')[0] : 'Primary Admin';
+        const { rows } = await client.query(
+          `INSERT INTO users
+             (auth0_sub, email, full_name, collector_status, mobile, role, account_state, approved_at)
+           VALUES ($1,$2,$3,'professional',NULL,'owner','approved',now())
+           ON CONFLICT (auth0_sub) DO UPDATE SET auth0_sub = EXCLUDED.auth0_sub
+           RETURNING *`,
+          [authInfo.sub, email ?? `${authInfo.sub}@unknown.local`, fullName],
+        );
+        return rowToUser(rows[0]);
+      });
+      if (!user) {
+        throw new ApiError(404, 'USER_NOT_REGISTERED', 'Complete signup in the mobile app first');
+      }
+    }
+
+    const { rows } = await query('SELECT * FROM packages WHERE code = $1', [user.packageCode]);
+    ok(res, { ...user, package: rows[0] ? rowToPackage(rows[0]) : null });
   }),
 );
 

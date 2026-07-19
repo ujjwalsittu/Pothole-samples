@@ -15,6 +15,7 @@
     "mobile": "cd apps/mobile && npm start",
     "migrate": "npm run migrate --workspace apps/api",
     "deploy": "node tools/deploy/index.mjs",
+    "update-server": "node tools/deploy/update.mjs",
     "build": "npm run build --workspace apps/api && npm run build --workspace apps/admin"
   },
   "engines": {
