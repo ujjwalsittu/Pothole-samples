@@ -1,24 +1,27 @@
 /**
- * TFLite-backed frame advisor (OPTIONAL — see README "On-device road guidance").
+ * TFLite-backed frame advisors (OPTIONAL — see README "On-device road guidance").
  *
  * Requirements to activate:
  *  1. `npm install react-native-fast-tflite` (declared as an optional peer
  *     dependency) + `npx expo prebuild`.
- *  2. A model binary at documentDirectory/models/road-detector.tflite
- *     (downloaded on first run by your distribution mechanism, or pushed via
- *     adb during development). The repository intentionally does NOT ship the
- *     binary; bundling it via Metro `require()` would hard-fail builds that
- *     don't have the file.
+ *  2. A model binary at documentDirectory/models/road-detector.tflite,
+ *     delivered OTA (src/detection/model-updater.ts) or pushed manually.
  *
- * If the native module or the model file is missing, `TfliteAdvisor.create()`
+ * The installed model's `kind` (models/model-meta.json, recorded from
+ * /models/latest) selects the adapter:
+ *  - 'road-binary' → TfliteAdvisor: input [1,224,224,3]u8, output [1,2] =
+ *    [roadProb, potholeProb].
+ *  - 'ssd-coco'    → SsdCocoAdvisor (ssd-coco.ts): standard SSD PostProcess
+ *    detector used for avoid-object guidance.
+ *
+ * If the native module or the model file is missing, `createTfliteAdvisor()`
  * resolves to null and the factory falls back to the HeuristicAdvisor.
- *
- * Expected model contract: input [1, 224, 224, 3] uint8 RGB, output
- * [1, 2] scores = [roadProb, potholeProb].
  */
 import * as FileSystem from 'expo-file-system';
 import { HeuristicAdvisor } from './heuristic';
+import { readInstalledModelMeta } from './meta';
 import { TFLITE_MODEL_PATH } from './paths';
+import { SsdCocoAdvisor } from './ssd-coco';
 import type { AdvisorFrame, AdvisorResult, FrameAdvisor } from './types';
 
 export { TFLITE_MODEL_PATH } from './paths';
@@ -26,7 +29,7 @@ export { TFLITE_MODEL_PATH } from './paths';
 const ROAD_THRESHOLD = 0.5;
 const POTHOLE_THRESHOLD = 0.6;
 
-interface TfliteModelLike {
+export interface TfliteModelLike {
   runSync(inputs: unknown[]): ArrayLike<number>[];
 }
 
@@ -53,25 +56,12 @@ function tryRequireTflite(): TfliteModuleLike | null {
   }
 }
 
+/** Binary road/pothole classifier: [1,224,224,3]u8 → [roadProb, potholeProb]. */
 export class TfliteAdvisor implements FrameAdvisor {
   readonly kind = 'tflite' as const;
   private readonly fallback = new HeuristicAdvisor();
 
-  private constructor(private model: TfliteModelLike | null) {}
-
-  /** Returns null when the module or model file is unavailable. */
-  static async create(): Promise<TfliteAdvisor | null> {
-    const tflite = tryRequireTflite();
-    if (!tflite) return null;
-    try {
-      const info = await FileSystem.getInfoAsync(TFLITE_MODEL_PATH);
-      if (!info.exists) return null;
-      const model = await tflite.loadTensorflowModel({ url: TFLITE_MODEL_PATH });
-      return new TfliteAdvisor(model);
-    } catch {
-      return null;
-    }
-  }
+  constructor(private model: TfliteModelLike | null) {}
 
   analyze(frame: AdvisorFrame): AdvisorResult {
     // Without raw frame data (no frame processor wired up) behave like the
@@ -94,5 +84,24 @@ export class TfliteAdvisor implements FrameAdvisor {
 
   dispose(): void {
     this.model = null;
+  }
+}
+
+/**
+ * Loads the installed model and returns the adapter matching its kind, or
+ * null when the module/model is unavailable (caller falls back to heuristic).
+ */
+export async function createTfliteAdvisor(): Promise<FrameAdvisor | null> {
+  const tflite = tryRequireTflite();
+  if (!tflite) return null;
+  try {
+    const info = await FileSystem.getInfoAsync(TFLITE_MODEL_PATH);
+    if (!info.exists) return null;
+    const meta = await readInstalledModelMeta();
+    const model = await tflite.loadTensorflowModel({ url: TFLITE_MODEL_PATH });
+    if (meta?.kind === 'ssd-coco') return new SsdCocoAdvisor(model);
+    return new TfliteAdvisor(model);
+  } catch {
+    return null;
   }
 }

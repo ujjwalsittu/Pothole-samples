@@ -1,20 +1,22 @@
 /**
- * Frame-advisor factory: prefers the TFLite implementation when its optional
- * native module + model file are present, otherwise the zero-dep heuristic.
+ * Frame-advisor factory: prefers the TFLite implementation (adapter chosen by
+ * the installed model's kind) when its optional native module + model file
+ * are present, otherwise the zero-dep heuristic.
  */
+import { createTfliteAdvisor } from './tflite';
 import { HeuristicAdvisor } from './heuristic';
-import { TfliteAdvisor } from './tflite';
 import type { FrameAdvisor } from './types';
 
 export * from './types';
 export { HeuristicAdvisor } from './heuristic';
-export { TfliteAdvisor, TFLITE_MODEL_PATH } from './tflite';
+export { TfliteAdvisor, createTfliteAdvisor, TFLITE_MODEL_PATH } from './tflite';
+export { SsdCocoAdvisor } from './ssd-coco';
 
 let cached: FrameAdvisor | null = null;
 
 export async function createFrameAdvisor(): Promise<FrameAdvisor> {
   if (cached) return cached;
-  cached = (await TfliteAdvisor.create()) ?? new HeuristicAdvisor();
+  cached = (await createTfliteAdvisor()) ?? new HeuristicAdvisor();
   return cached;
 }
 

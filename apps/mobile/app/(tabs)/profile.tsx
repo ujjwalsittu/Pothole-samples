@@ -58,7 +58,7 @@ export default function ProfileScreen() {
       setError('Name must be at least 3 characters.');
       return;
     }
-    if (upiId.trim().length > 0 && !UPI_REGEX.test(upiId.trim())) {
+    if (profile?.isCollector && upiId.trim().length > 0 && !UPI_REGEX.test(upiId.trim())) {
       setError('Enter a valid UPI ID, e.g. name@bank');
       return;
     }
@@ -66,7 +66,8 @@ export default function ProfileScreen() {
     try {
       const updated = await patchMe({
         fullName: fullName.trim(),
-        upiId: upiId.trim(),
+        // UPI is a collector-only field; never send it for regular users.
+        ...(profile?.isCollector ? { upiId: upiId.trim() } : {}),
         ...(photoBase64 ? { photoBase64 } : {}),
       });
       setProfile(updated);
@@ -111,16 +112,20 @@ export default function ProfileScreen() {
               onChangeText={setFullName}
               placeholderTextColor={colors.textFaint}
             />
-            <Text style={styles.label}>UPI ID</Text>
-            <TextInput
-              style={styles.input}
-              value={upiId}
-              onChangeText={setUpiId}
-              autoCapitalize="none"
-              autoCorrect={false}
-              placeholder="name@bank"
-              placeholderTextColor={colors.textFaint}
-            />
+            {profile?.isCollector ? (
+              <>
+                <Text style={styles.label}>UPI ID (for withdrawals)</Text>
+                <TextInput
+                  style={styles.input}
+                  value={upiId}
+                  onChangeText={setUpiId}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  placeholder="name@bank"
+                  placeholderTextColor={colors.textFaint}
+                />
+              </>
+            ) : null}
             {error ? <Text style={styles.error}>{error}</Text> : null}
             <View style={styles.editRow}>
               <Button title="Save" onPress={() => void save()} loading={saving} style={styles.editBtn} />
@@ -143,9 +148,20 @@ export default function ProfileScreen() {
           <>
             <Text style={styles.name}>{profile?.fullName}</Text>
             <Text style={styles.email}>{profile?.email}</Text>
-            <InfoRow label="Status" value={capitalize(profile?.collectorStatus ?? '—')} />
+            <InfoRow label="Occupation" value={capitalize(profile?.collectorStatus ?? '—')} />
+            {profile?.organization ? (
+              <InfoRow label="Organization" value={profile.organization} />
+            ) : null}
+            {profile?.mobile ? (
+              <InfoRow
+                label="Mobile"
+                value={`${profile.mobile}${profile.whatsappAvailable ? ' (WhatsApp)' : ''}`}
+              />
+            ) : null}
             <InfoRow label="Role" value={capitalize(profile?.role ?? '—')} />
-            <InfoRow label="UPI ID" value={profile?.upiId ?? 'not set'} />
+            {profile?.isCollector ? (
+              <InfoRow label="UPI ID" value={profile?.upiId ?? 'not set'} />
+            ) : null}
             <Button
               title="Edit profile"
               variant="secondary"
@@ -156,23 +172,27 @@ export default function ProfileScreen() {
         )}
       </View>
 
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Package</Text>
-        {(() => {
-          // Live package from /me; DEFAULT_PACKAGE only as pre-migration fallback.
-          const pkg = profile?.package ?? DEFAULT_PACKAGE;
-          return (
-            <>
-              <Text style={styles.pkgText}>
-                {pkg.name}: {pkg.videoQuota} videos OR {pkg.photoQuota} photos {'→'} ₹{pkg.payoutInr}
-              </Text>
-              {profile?.package?.nextPackageCode ? (
-                <Text style={styles.pkgNext}>Next up: {profile.package.nextPackageCode}</Text>
-              ) : null}
-            </>
-          );
-        })()}
-      </View>
+      {/* Plan details are a money surface — collectors only. */}
+      {profile?.isCollector ? (
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Collector plan</Text>
+          {(() => {
+            // Live package from /me; DEFAULT_PACKAGE only as pre-migration fallback.
+            const pkg = profile?.package ?? DEFAULT_PACKAGE;
+            return (
+              <>
+                <Text style={styles.pkgText}>
+                  {pkg.name}: {pkg.videoQuota} videos {'→'} ₹{pkg.videoPayoutInr} per track ·{' '}
+                  {pkg.photoQuota} photos {'→'} ₹{pkg.photoPayoutInr} per track
+                </Text>
+                {profile?.package?.nextPackageCode ? (
+                  <Text style={styles.pkgNext}>Next up: {profile.package.nextPackageCode}</Text>
+                ) : null}
+              </>
+            );
+          })()}
+        </View>
+      ) : null}
 
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Help</Text>

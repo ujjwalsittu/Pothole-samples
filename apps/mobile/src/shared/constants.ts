@@ -32,16 +32,23 @@ export const VIDEO_RULES = {
   MIN_POTHOLES: 2,
 } as const;
 
-/** Initial package offered on signup. */
+/**
+ * Default collector plan (admin-assigned; regular users contribute without
+ * payment — the platform is marketed as pothole SUBMISSION, not rewards).
+ * Each track pays independently only when its full quota completes.
+ */
 export const DEFAULT_PACKAGE = {
   code: 'STARTER_1000',
-  name: 'Starter Package',
-  /** Complete EITHER quota to earn the payout. */
-  videoQuota: 10, // pothole videos on a moving road
-  photoQuota: 20, // pothole photos
-  payoutInr: 1000,
+  name: 'Starter Plan',
+  videoQuota: 10, // pothole videos on a moving road → videoPayoutInr
+  videoPayoutInr: 1000,
+  photoQuota: 20, // pothole photos → photoPayoutInr
+  photoPayoutInr: 1000,
   currency: 'INR',
 } as const;
+
+/** This email (or the very first signup) is bootstrapped as primary admin. */
+export const PRIMARY_ADMIN_EMAIL = 'ujjwal@threemates.tech';
 
 /** Duplicate detection thresholds. */
 export const DEDUP = {

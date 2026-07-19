@@ -42,7 +42,7 @@ export default function LoginScreen() {
       <View style={styles.top}>
         <Logo size={120} wordmark />
         <Text style={styles.subtitle}>
-          Capture potholes. Improve roads. Get paid.
+          Report potholes. Make your roads safer.
         </Text>
       </View>
 

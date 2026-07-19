@@ -69,6 +69,8 @@ export default function TabsLayout() {
         name="earnings"
         options={{
           title: 'Earnings',
+          // Money surfaces exist only for admin-assigned collectors.
+          href: profile?.isCollector ? '/(tabs)/earnings' : null,
           tabBarIcon: ({ color }) => <TabIcon name="earnings" color={color} />,
         }}
       />

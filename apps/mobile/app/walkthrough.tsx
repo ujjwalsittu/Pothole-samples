@@ -26,43 +26,37 @@ import { Button } from '@/components/Button';
 import { BrandFooter } from '@/components/BrandFooter';
 import { markWalkthroughSeen } from '@/onboarding/flags';
 import { colors, font, radius, spacing } from '@/theme';
-import { DEFAULT_PACKAGE, SPEED, VIDEO_RULES } from '@/shared';
+import { SPEED, VIDEO_RULES } from '@/shared';
 
 interface Slide {
   key: string;
   title: string;
   body: string;
   bullets?: string[];
-  glyph: 'logo' | 'signup' | 'earnings' | 'photo' | 'video' | 'offline';
+  glyph: 'logo' | 'signup' | 'community' | 'photo' | 'video' | 'offline';
 }
 
 const SLIDES: Slide[] = [
   {
     key: 'welcome',
-    title: 'Welcome to PotholeCollect',
-    body: 'Turn every drive into road data. Capture potholes, help fix roads — and get paid for it.',
+    title: 'Report potholes, make roads safer',
+    body: 'Every report you submit maps real road damage for the people who can fix it. Your city, one pothole at a time.',
     glyph: 'logo',
   },
   {
-    key: 'signup',
-    title: 'Sign up & get approved',
-    body: 'Complete your profile with your name, photo and UPI ID. An admin reviews every account — we email you as soon as you are approved.',
+    key: 'how',
+    title: 'How a submission works',
+    body: 'Capture a photo or a short drive-by video, outline each pothole on screen, and submit. Every report carries an exact GPS location and goes through review before it counts.',
     glyph: 'signup',
-  },
-  {
-    key: 'package',
-    title: 'Your starter package',
-    body: `Complete ${DEFAULT_PACKAGE.videoQuota} pothole videos on a moving road OR ${DEFAULT_PACKAGE.photoQuota} pothole photos and earn ₹${DEFAULT_PACKAGE.payoutInr}, paid straight to your UPI.`,
-    glyph: 'earnings',
   },
   {
     key: 'photo',
     title: 'Photos: road only',
-    body: 'Frame the road surface and draw a polygon around each pothole. A quick road-width reference gives instant size & material estimates.',
+    body: 'Frame the road surface and draw a polygon around each pothole. A quick road-width reference gives instant size estimates.',
     bullets: [
       'Focus on the road — nothing else',
       'Avoid trees, buildings, vehicles, people, animals, signboards',
-      'No duplicates — every sample is checked against everyone’s submissions',
+      'No duplicates — every report is checked against everyone’s submissions',
     ],
     glyph: 'photo',
   },
@@ -79,9 +73,15 @@ const SLIDES: Slide[] = [
     glyph: 'video',
   },
   {
+    key: 'community',
+    title: 'Join the community',
+    body: 'Keep a daily reporting streak alive and climb the leaderboard. See how your submissions stack up against reporters across the city.',
+    glyph: 'community',
+  },
+  {
     key: 'offline',
-    title: 'Offline-proof & paid out',
-    body: 'No signal? Samples queue on your phone and upload themselves later, chunk by chunk. Accepted work lands in your earnings ledger and is settled to your UPI.',
+    title: 'Works offline too',
+    body: 'No signal? Reports queue on your phone and upload themselves later, chunk by chunk, as soon as you are back online.',
     glyph: 'offline',
   },
 ];
@@ -242,13 +242,15 @@ function SlideGlyph({ name }: { name: Slide['glyph'] }) {
           <Path d="M69 64 L74.5 69.5 L84 58.5" {...s} stroke={colors.success} />
         </Svg>
       );
-    case 'earnings':
+    case 'community':
       return (
         <Svg width={140} height={140} viewBox="0 0 100 100">
-          <Rect x={12} y={26} width={76} height={50} rx={8} {...s} />
-          <Circle cx={50} cy={51} r={13} {...s} />
-          <Path d="M45 44 H55 M45 49 H55 M45 44 C51 44 51 51 45 51 L54 59" {...s} strokeWidth={2.5} />
-          <Path d="M12 38 H88" {...s} strokeWidth={2} />
+          {/* trophy */}
+          <Path d="M34 20 H66 V44 C66 56 58 64 50 64 C42 64 34 56 34 44 Z" {...s} />
+          <Path d="M34 27 H20 C20 42 27 48 35 48 M66 27 H80 C80 42 73 48 65 48" {...s} />
+          <Path d="M50 64 V74 M38 84 H62 M42 74 H58" {...s} />
+          {/* streak flame */}
+          <Path d="M50 30 C52 35 57 36 57 42 C57 47 54 50 50 50 C46 50 43 47 43 42 C43 38 45 36 46 34 C46 37 48 38 49 38 C48 35 49 32 50 30 Z" fill={colors.primary} opacity={0.7} />
         </Svg>
       );
     case 'photo':

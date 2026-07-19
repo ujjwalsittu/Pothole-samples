@@ -19,30 +19,18 @@ import { getStoredToken } from '@/api/client';
 import { getLatestModel } from '@/api/endpoints';
 import { sha256OfFile } from '@/upload/hash';
 import { resetFrameAdvisor } from './index';
-import { MODELS_DIR, MODEL_META_PATH, TFLITE_MODEL_PATH, TFLITE_MODEL_TMP_PATH } from './paths';
+import { readInstalledModelMeta, writeInstalledModelMeta, type InstalledModelMeta } from './meta';
+import { MODELS_DIR, TFLITE_MODEL_PATH, TFLITE_MODEL_TMP_PATH } from './paths';
 
-export interface InstalledModelMeta {
-  version: number;
-  sha256: string;
-}
+export type { InstalledModelMeta } from './meta';
 
 export interface ModelUpdateResult {
   version: number;
 }
 
-export async function getInstalledModelMeta(): Promise<InstalledModelMeta | null> {
-  try {
-    const info = await FileSystem.getInfoAsync(MODEL_META_PATH);
-    if (!info.exists) return null;
-    const raw = await FileSystem.readAsStringAsync(MODEL_META_PATH);
-    const meta = JSON.parse(raw) as Partial<InstalledModelMeta>;
-    if (typeof meta.version !== 'number' || typeof meta.sha256 !== 'string') return null;
-    // Meta without the binary counts as not installed.
-    const model = await FileSystem.getInfoAsync(TFLITE_MODEL_PATH);
-    return model.exists ? { version: meta.version, sha256: meta.sha256 } : null;
-  } catch {
-    return null;
-  }
+/** Installed-model meta for display (Profile) — null when not installed. */
+export function getInstalledModelMeta(): Promise<InstalledModelMeta | null> {
+  return readInstalledModelMeta();
 }
 
 let inFlight: Promise<ModelUpdateResult | null> | null = null;
@@ -99,11 +87,14 @@ async function doCheck(): Promise<ModelUpdateResult | null> {
       }
     }
 
-    // Atomic swap + meta write.
+    // Atomic swap + meta write (kind selects the app-side adapter).
     await FileSystem.deleteAsync(TFLITE_MODEL_PATH, { idempotent: true });
     await FileSystem.moveAsync({ from: TFLITE_MODEL_TMP_PATH, to: TFLITE_MODEL_PATH });
-    const meta: InstalledModelMeta = { version: latest.version, sha256: latest.sha256 };
-    await FileSystem.writeAsStringAsync(MODEL_META_PATH, JSON.stringify(meta));
+    await writeInstalledModelMeta({
+      version: latest.version,
+      sha256: latest.sha256,
+      kind: latest.kind,
+    });
 
     // Next capture-screen mount reloads the advisor with the new file.
     resetFrameAdvisor();

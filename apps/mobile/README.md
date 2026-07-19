@@ -1,9 +1,15 @@
 # PotholeCollect — mobile app
 
 Expo (SDK 51) + expo-router app for collecting pothole photo/video samples with
-precise GPS, polygon annotations, size/material estimates and an offline-first
-chunked upload pipeline. Dark navy + amber branding, powered by
+precise GPS, polygon annotations, size estimates and an offline-first chunked
+upload pipeline. Dark navy + amber branding, powered by
 **Threemates Tech Ventures**.
+
+> **Positioning:** the app is marketed as **civic pothole submission** — users
+> report potholes to make roads safer. There is **zero money/rewards copy**
+> anywhere pre-login or for regular users. Earnings, plans and withdrawals
+> exist only for **admin-assigned collectors** (`profile.isCollector`), and
+> every money surface in the app is gated on that flag.
 
 ## Setup
 
@@ -85,16 +91,29 @@ A pluggable `FrameAdvisor` interface guides collectors while capturing
   (pointing at the sky or the floor → "Point the camera at the road ahead") and
   GPS speed (video mode, not moving → "Start driving to record"). Hints appear
   as an animated, non-blocking amber pill on both capture screens.
-- **TfliteAdvisor (optional):** activates automatically when BOTH are present:
+- **TFLite advisors (optional):** activate automatically when BOTH are present:
   1. `react-native-fast-tflite` installed (declared as an *optional* peer
      dependency — `npm install react-native-fast-tflite` + `npx expo prebuild`);
   2. a model binary at `documentDirectory/models/road-detector.tflite`
-     (expected contract: input `[1,224,224,3]` uint8 RGB → output `[1,2]` =
-     `[roadProb, potholeProb]`). The repo intentionally does **not** ship the
-     binary; push it with `adb push` during development or download it on first
-     run. If the module or model is missing the factory falls back to the
-     heuristic silently. Wiring a camera frame processor is the single drop-in
-     point left (`AdvisorFrame.frameData`).
+     (OTA-delivered or pushed with `adb push` during development). The repo
+     intentionally does **not** ship any binary.
+
+  The installed model's `kind` (recorded in `models/model-meta.json` from
+  `/models/latest`) selects the adapter:
+  - **`road-binary`** → `TfliteAdvisor`: input `[1,224,224,3]u8` → `[1,2]` =
+    `[roadProb, potholeProb]`.
+  - **`ssd-coco`** → `SsdCocoAdvisor` (`src/detection/ssd-coco.ts`): a standard
+    TFLite SSD PostProcess detector (e.g. SSDLite-MobileNetV2), input
+    `[1,300,300,3]u8`, outputs boxes/classes/scores/count with the embedded
+    90-slot COCO label map (`src/detection/coco-labels.ts`). Detections with
+    score > 0.5 in the avoid set (people, vehicles, animals, plants, signs)
+    covering > 20% of the frame trigger "Move away from <label> — keep the
+    road in frame". **COCO has no pothole class, so `potholeLikely` is always
+    false for this kind** — it only flags what should not dominate the frame.
+
+  If the module or model is missing the factory falls back to the heuristic
+  silently. Wiring a camera frame processor is the single drop-in point left
+  (`AdvisorFrame.frameData`).
 
 ### OTA model delivery
 
@@ -126,24 +145,36 @@ The detection model ships to installed apps **without a rebuild**:
 
 - **Splash → routing** (`app/index.tsx`): animated logo + "Powered by
   Threemates Tech Ventures" + version, then routes by auth/profile state:
-  login → signup details → package offer → pending approval → tabs. First
+  login → signup details → pending approval → tabs. First
   approved login shows the **animated walkthrough** (`app/walkthrough.tsx`,
   6 swipeable slides with parallax + animated dots; AsyncStorage flag
   `walkthrough_seen_v1`; replayable from Profile). One-time **coach marks**
   additionally point out the dashboard capture buttons, the photo annotator
   flow and the video HUD.
-- **Signup** (`(auth)/signup-details`): name, photo, Student/Professional
-  status (only an admin can later change status to Owner), UPI ID with
-  validation, and camera/mic/location permission rationale.
-- **Package** (`(auth)/package` + Profile + dashboard): shows the user's
-  **live package from `/me` (`profile.package`)** — name, quotas, payout — with
-  `DEFAULT_PACKAGE` only as a fallback (and in the pre-login walkthrough).
-  When the package defines `nextPackageCode`, a "Next up: …" teaser appears.
+- **Signup** (`(auth)/signup-details`): name **prefilled from the Auth0
+  profile**, photo, occupation picker Student/Professional/Self (Student →
+  required College/University; Professional → optional Company), mobile number
+  (10-15 digits) + "This number is on WhatsApp" checkbox, camera/mic/location
+  permission rationale. A best-effort GPS fix (`signupLocation`) and a device
+  fingerprint (expo-device + expo-constants + a per-install UUID in
+  SecureStore) are sent for admin fraud review. **No UPI at signup** — UPI is
+  captured at the first withdrawal. No package/offer screen follows; signup
+  goes straight to pending-approval.
+- **Collector plan** (Profile + dashboard, collectors only): the live package
+  from `/me` (`profile.package`) with **independent per-track payouts** —
+  completing `videoQuota` videos activates `videoPayoutInr`, completing
+  `photoQuota` photos activates `photoPayoutInr`; partial tracks activate
+  nothing. "Next up: …" teaser when `nextPackageCode` is set. The first time
+  `isCollector` turns true the dashboard shows a one-time congratulation
+  banner.
 - **Dashboard**: stagger-in stat cards with count-up numbers (accepted includes
-  partially accepted), package progress bars (spring-animated), balance, streak
-  flame chip (≥2 days), **"Boost zones near you"** (GET `/campaigns/nearby`
-  with distance + compass direction + active window; hidden when empty), big
-  Capture Photo / Record Video buttons, offline-upload banner.
+  partially accepted), streak flame chip (≥2 days), **"Boost zones near you"**
+  (GET `/campaigns/nearby` with distance + compass direction + active window;
+  hidden when empty), big Capture Photo / Record Video buttons, offline-upload
+  banner. Collectors additionally see plan-progress bars (with per-track ₹)
+  and **Active** ("withdrawable now") vs **Upcoming** ("unlocks when a track
+  completes") balance cards; everyone else sees a money-free "Community
+  impact" card instead.
 - **Capture preflight** (`capture/preflight?mode=photo|video`): sequential
   checks — internet (offline allowed, sample is queued), location services +
   permission + first fix ≤ 15 m accuracy, mock-location rejection (hard fail),
@@ -183,10 +214,20 @@ The detection model ships to installed apps **without a rebuild**:
   cache), state chips incl. **Partially accepted** (teal — "some annotations
   were adjusted by the reviewer — full credit granted") and rejection reasons
   with an explicit no-re-upload note.
-- **Earnings**: summary cards + full ledger with settlement proof/UTR links.
+- **Earnings** (collectors only — the tab is hidden otherwise): Earned/Settled
+  summary, **Active vs Upcoming** balance cards, full ledger with settlement
+  proof/UTR links, and **withdrawals**: "Request withdrawal" opens a sheet
+  (amount defaults to the full active balance, UPI prefilled from the profile
+  after the first request), `POST /withdrawals` with friendly handling of
+  `EXCEEDS_ACTIVE_BALANCE` (explains that upcoming earnings unlock on track
+  completion) and `NOT_A_COLLECTOR`; request history with
+  requested/approved/rejected/paid chips. The screen states explicitly:
+  "Earnings activate only when a full track completes — e.g. 19 of 20 photos
+  pays nothing until the 20th is accepted."
 - **Ranks**: current + best streak card (flame, count-up), month/all-time
   leaderboard toggle, top-50 list with gold/silver/bronze medals, your row
-  highlighted and pinned to the bottom when outside the top 50.
+  highlighted and pinned to the bottom when outside the top 50. ₹ amounts
+  render only when positive (the API zeroes them for non-collectors).
 - **Profile**: editable name/UPI/photo, live package details, replay
   walkthrough, logout. **Admin tab** (admins only): approve/reject users,
   pending-review count (full review lives in the web dashboard).

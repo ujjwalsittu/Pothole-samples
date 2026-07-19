@@ -18,6 +18,7 @@ import { useAuth } from '@/auth/AuthContext';
 import { useToast } from '@/components/Toast';
 import { useCountUp } from '@/hooks/useCountUp';
 import { checkForModelUpdate } from '@/detection/model-updater';
+import { hasSeenCollectorCongrats, markCollectorCongratsSeen } from '@/onboarding/flags';
 import { uploadManager } from '@/upload/manager';
 import { activeWindow, formatDistance, withGeo, type CampaignWithGeo } from '@/utils/campaigns';
 import { colors, font, radius, spacing } from '@/theme';
@@ -32,7 +33,22 @@ export default function DashboardScreen() {
   const [campaigns, setCampaigns] = useState<CampaignWithGeo[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [pendingUploads, setPendingUploads] = useState(0);
+  const [showCongrats, setShowCongrats] = useState(false);
   const coach = useCoachMark('coach_dashboard_v1');
+
+  const isCollector = profile?.isCollector === true;
+
+  // One-time congratulation the first time the collector flag appears.
+  useEffect(() => {
+    if (!isCollector) return;
+    let mounted = true;
+    void hasSeenCollectorCongrats().then((seen) => {
+      if (mounted && !seen) setShowCongrats(true);
+    });
+    return () => {
+      mounted = false;
+    };
+  }, [isCollector]);
 
   const load = useCallback(async () => {
     try {
@@ -100,6 +116,22 @@ export default function DashboardScreen() {
         </View>
         <Text style={styles.sub}>Let{'’'}s map some potholes today.</Text>
 
+        {showCongrats ? (
+          <Animated.View entering={FadeInDown.springify()} style={styles.congratsBanner}>
+            <Text style={styles.congratsText}>
+              Congratulations — you{'’'}ve been made a collector on {pkgName}!
+            </Text>
+            <Pressable
+              onPress={() => {
+                setShowCongrats(false);
+                void markCollectorCongratsSeen();
+              }}
+            >
+              <Text style={styles.congratsDismiss}>Got it</Text>
+            </Pressable>
+          </Animated.View>
+        ) : null}
+
         {pendingUploads > 0 ? (
           <Pressable style={styles.queueBanner} onPress={() => router.push('/capture/queue')}>
             <Text style={styles.queueText}>
@@ -137,28 +169,57 @@ export default function DashboardScreen() {
           </Text>
         ) : null}
 
-        {/* package progress */}
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>{pkgName} progress</Text>
-          <ProgressBar
-            label="Videos"
-            progress={p ? p.videosDone / Math.max(1, p.videoQuota) : 0}
-            valueText={p ? `${p.videosDone} / ${p.videoQuota}` : '— / —'}
-          />
-          <ProgressBar
-            label="Photos"
-            progress={p ? p.photosDone / Math.max(1, p.photoQuota) : 0}
-            valueText={p ? `${p.photosDone} / ${p.photoQuota}` : '— / —'}
-            color={colors.info}
-          />
-          <View style={styles.balanceRow}>
-            <Text style={styles.balanceLabel}>Balance</Text>
-            <Text style={styles.balanceValue}>₹{stats?.balanceInr ?? 0}</Text>
+        {isCollector ? (
+          <>
+            {/* plan progress — money surfaces are collector-only */}
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>{pkgName} progress</Text>
+              <ProgressBar
+                label={`Videos · ₹${p?.videoPayoutInr ?? pkg?.videoPayoutInr ?? 0} per completed track`}
+                progress={p ? p.videosDone / Math.max(1, p.videoQuota) : 0}
+                valueText={p ? `${p.videosDone} / ${p.videoQuota}` : '— / —'}
+              />
+              <ProgressBar
+                label={`Photos · ₹${p?.photoPayoutInr ?? pkg?.photoPayoutInr ?? 0} per completed track`}
+                progress={p ? p.photosDone / Math.max(1, p.photoQuota) : 0}
+                valueText={p ? `${p.photosDone} / ${p.photoQuota}` : '— / —'}
+                color={colors.info}
+              />
+              {pkg?.nextPackageCode ? (
+                <Text style={styles.nextPkg}>Next up: {pkg.nextPackageCode}</Text>
+              ) : null}
+            </View>
+            <View style={styles.balanceGrid}>
+              <View style={styles.balanceCard}>
+                <Text style={styles.balanceCardValue}>₹{stats?.activeInr ?? 0}</Text>
+                <Text style={styles.balanceCardLabel}>Active</Text>
+                <Text style={styles.balanceCardHint}>withdrawable now</Text>
+              </View>
+              <View style={styles.balanceCard}>
+                <Text style={[styles.balanceCardValue, styles.upcomingValue]}>
+                  ₹{stats?.upcomingInr ?? 0}
+                </Text>
+                <Text style={styles.balanceCardLabel}>Upcoming</Text>
+                <Text style={styles.balanceCardHint}>unlocks when a track completes</Text>
+              </View>
+            </View>
+          </>
+        ) : (
+          /* Non-collectors see community-impact framing — no money anywhere. */
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Community impact</Text>
+            <Text style={styles.impactText}>
+              {stats
+                ? `${stats.accepted + stats.partiallyAccepted} of your reports have been verified — every one maps real road damage for repair.`
+                : 'Your verified reports map real road damage for repair.'}
+            </Text>
+            {stats && stats.pending > 0 ? (
+              <Text style={styles.impactSub}>
+                {stats.pending} report{stats.pending === 1 ? '' : 's'} currently in review.
+              </Text>
+            ) : null}
           </View>
-          {pkg?.nextPackageCode ? (
-            <Text style={styles.nextPkg}>Next up: {pkg.nextPackageCode}</Text>
-          ) : null}
-        </View>
+        )}
 
         {/* campaigns near me */}
         {campaigns.length > 0 ? (
@@ -279,18 +340,38 @@ const styles = StyleSheet.create({
     marginTop: spacing.md,
   },
   cardTitle: { color: colors.text, fontSize: font.h3, fontWeight: '700', marginBottom: spacing.sm },
-  balanceRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+  balanceGrid: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md },
+  balanceCard: {
+    flex: 1,
+    backgroundColor: colors.card,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.md,
     alignItems: 'center',
-    marginTop: spacing.sm,
-    borderTopWidth: 1,
-    borderTopColor: colors.border,
-    paddingTop: spacing.sm,
   },
-  balanceLabel: { color: colors.textDim, fontSize: font.body },
-  balanceValue: { color: colors.primary, fontSize: font.h2, fontWeight: '800' },
+  balanceCardValue: { color: colors.primary, fontSize: font.h2, fontWeight: '800' },
+  upcomingValue: { color: colors.info },
+  balanceCardLabel: { color: colors.text, fontSize: font.small, fontWeight: '700', marginTop: 2 },
+  balanceCardHint: { color: colors.textFaint, fontSize: font.tiny, marginTop: 2, textAlign: 'center' },
   nextPkg: { color: colors.textFaint, fontSize: font.tiny, marginTop: spacing.sm },
+  impactText: { color: colors.textDim, fontSize: font.small, lineHeight: 20 },
+  impactSub: { color: colors.textFaint, fontSize: font.tiny, marginTop: spacing.sm },
+  congratsBanner: {
+    backgroundColor: '#14532D',
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.success,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+  },
+  congratsText: { color: '#86EFAC', fontSize: font.small, fontWeight: '700' },
+  congratsDismiss: {
+    color: colors.success,
+    fontSize: font.small,
+    fontWeight: '800',
+    marginTop: spacing.sm,
+  },
   zoneRow: {
     flexDirection: 'row',
     alignItems: 'center',

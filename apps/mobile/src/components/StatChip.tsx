@@ -45,6 +45,21 @@ export function sampleStateChip(state: SampleState): { label: string; tone: Tone
   }
 }
 
+export function withdrawalStateChip(
+  state: 'requested' | 'approved' | 'rejected' | 'paid',
+): { label: string; tone: Tone } {
+  switch (state) {
+    case 'requested':
+      return { label: 'Requested', tone: 'info' };
+    case 'approved':
+      return { label: 'Approved', tone: 'teal' };
+    case 'rejected':
+      return { label: 'Rejected', tone: 'danger' };
+    case 'paid':
+      return { label: 'Paid', tone: 'success' };
+  }
+}
+
 export function queueStateChip(state: QueueState): { label: string; tone: Tone } {
   switch (state) {
     case 'draft':

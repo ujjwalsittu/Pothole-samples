@@ -1,35 +1,55 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Image, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import { useCameraPermissions, useMicrophonePermissions } from 'expo-camera';
+import { useAuth0 } from 'react-native-auth0';
 import { Screen } from '@/components/Screen';
 import { Button } from '@/components/Button';
 import { useAuth } from '@/auth/AuthContext';
 import { signupComplete } from '@/api/endpoints';
 import { ApiError } from '@/api/client';
+import { buildDeviceFingerprint } from '@/utils/fingerprint';
 import { colors, font, radius, spacing } from '@/theme';
 
-const UPI_REGEX = /^[\w.\-]{2,}@[a-zA-Z]{2,}$/;
+const MOBILE_REGEX = /^\d{10,15}$/;
 
-type Status = 'student' | 'professional';
+type Occupation = 'student' | 'professional' | 'self';
+
+const OCCUPATIONS: Array<{ key: Occupation; label: string }> = [
+  { key: 'student', label: 'Student' },
+  { key: 'professional', label: 'Professional' },
+  { key: 'self', label: 'Self' },
+];
 
 export default function SignupDetailsScreen() {
   const router = useRouter();
   const { setProfile, logout } = useAuth();
+  const { user: authUser } = useAuth0();
 
   const [fullName, setFullName] = useState('');
   const [photoUri, setPhotoUri] = useState<string | null>(null);
   const [photoBase64, setPhotoBase64] = useState<string | null>(null);
-  const [status, setStatus] = useState<Status>('student');
-  const [upiId, setUpiId] = useState('');
+  const [occupation, setOccupation] = useState<Occupation>('student');
+  const [organization, setOrganization] = useState('');
+  const [mobile, setMobile] = useState('');
+  const [whatsappAvailable, setWhatsappAvailable] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   const [cameraPerm, requestCameraPerm] = useCameraPermissions();
   const [micPerm, requestMicPerm] = useMicrophonePermissions();
   const [locPerm, requestLocPerm] = Location.useForegroundPermissions();
+
+  // Prefill the name from the Auth0 profile (Google login carries it).
+  useEffect(() => {
+    if (fullName.length > 0 || !authUser) return;
+    const fromParts = [authUser.givenName, authUser.familyName].filter(Boolean).join(' ');
+    const candidate = authUser.name && !authUser.name.includes('@') ? authUser.name : fromParts;
+    if (candidate) setFullName(candidate);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authUser]);
 
   const pickPhoto = async () => {
     const res = await ImagePicker.launchImageLibraryAsync({
@@ -45,8 +65,9 @@ export default function SignupDetailsScreen() {
     }
   };
 
-  const upiValid = UPI_REGEX.test(upiId.trim());
   const nameValid = fullName.trim().length >= 3;
+  const mobileValid = MOBILE_REGEX.test(mobile.trim());
+  const organizationValid = occupation !== 'student' || organization.trim().length >= 2;
 
   const submit = async () => {
     setError(null);
@@ -54,20 +75,46 @@ export default function SignupDetailsScreen() {
       setError('Please enter your full name (at least 3 characters).');
       return;
     }
-    if (!upiValid) {
-      setError('Enter a valid UPI ID, e.g. name@bank');
+    if (occupation === 'student' && !organizationValid) {
+      setError('Please enter your college or university.');
+      return;
+    }
+    if (!mobileValid) {
+      setError('Enter a valid mobile number (10-15 digits).');
       return;
     }
     setSubmitting(true);
     try {
+      // Best-effort extras: one GPS fix + device fingerprint (both silent).
+      let signupLocation: { lat: number; lng: number; acc: number } | null = null;
+      try {
+        if (locPerm?.granted) {
+          const fix =
+            (await Location.getLastKnownPositionAsync()) ??
+            (await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }));
+          signupLocation = {
+            lat: fix.coords.latitude,
+            lng: fix.coords.longitude,
+            acc: fix.coords.accuracy ?? 999,
+          };
+        }
+      } catch {
+        signupLocation = null;
+      }
+      const deviceFingerprint = await buildDeviceFingerprint().catch(() => null);
+
       const user = await signupComplete({
         fullName: fullName.trim(),
-        collectorStatus: status,
-        upiId: upiId.trim(),
         photoBase64,
+        collectorStatus: occupation,
+        organization: organization.trim().length > 0 ? organization.trim() : null,
+        mobile: mobile.trim(),
+        whatsappAvailable,
+        signupLocation,
+        deviceFingerprint,
       });
       setProfile(user);
-      router.replace('/(auth)/package');
+      router.replace('/(auth)/pending');
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'Could not save your details. Try again.');
     } finally {
@@ -78,7 +125,7 @@ export default function SignupDetailsScreen() {
   return (
     <Screen>
       <Text style={styles.title}>Complete your profile</Text>
-      <Text style={styles.subtitle}>We need a few details before you can start collecting.</Text>
+      <Text style={styles.subtitle}>A few details before you can start reporting potholes.</Text>
 
       {/* photo */}
       <Pressable onPress={() => void pickPhoto()} style={styles.photoWrap}>
@@ -103,45 +150,78 @@ export default function SignupDetailsScreen() {
         autoCapitalize="words"
       />
 
-      {/* status */}
-      <Text style={styles.label}>I am a</Text>
+      {/* occupation */}
+      <Text style={styles.label}>Occupation</Text>
       <View style={styles.statusRow}>
-        {(['student', 'professional'] as const).map((s) => (
+        {OCCUPATIONS.map(({ key, label }) => (
           <Pressable
-            key={s}
-            onPress={() => setStatus(s)}
-            style={[styles.statusChip, status === s && styles.statusChipActive]}
+            key={key}
+            onPress={() => setOccupation(key)}
+            style={[styles.statusChip, occupation === key && styles.statusChipActive]}
           >
-            <Text style={[styles.statusText, status === s && styles.statusTextActive]}>
-              {s === 'student' ? 'Student' : 'Professional'}
+            <Text style={[styles.statusText, occupation === key && styles.statusTextActive]}>
+              {label}
             </Text>
           </Pressable>
         ))}
       </View>
-      <Text style={styles.note}>Only an admin can later change your status to Owner.</Text>
 
-      {/* UPI */}
-      <Text style={styles.label}>UPI ID (for payouts)</Text>
-      <TextInput
-        style={[styles.input, upiId.length > 0 && !upiValid && styles.inputError]}
-        value={upiId}
-        onChangeText={setUpiId}
-        placeholder="name@bank"
-        placeholderTextColor={colors.textFaint}
-        autoCapitalize="none"
-        autoCorrect={false}
-      />
-      {upiId.length > 0 && !upiValid ? (
-        <Text style={styles.fieldError}>That does not look like a valid UPI ID.</Text>
+      {occupation === 'student' ? (
+        <>
+          <Text style={styles.label}>College / University (required)</Text>
+          <TextInput
+            style={styles.input}
+            value={organization}
+            onChangeText={setOrganization}
+            placeholder="Your college or university"
+            placeholderTextColor={colors.textFaint}
+            autoCapitalize="words"
+          />
+        </>
       ) : null}
+      {occupation === 'professional' ? (
+        <>
+          <Text style={styles.label}>Company (optional)</Text>
+          <TextInput
+            style={styles.input}
+            value={organization}
+            onChangeText={setOrganization}
+            placeholder="Where do you work?"
+            placeholderTextColor={colors.textFaint}
+            autoCapitalize="words"
+          />
+        </>
+      ) : null}
+
+      {/* mobile */}
+      <Text style={styles.label}>Mobile number</Text>
+      <TextInput
+        style={[styles.input, mobile.length > 0 && !mobileValid && styles.inputError]}
+        value={mobile}
+        onChangeText={(v) => setMobile(v.replace(/[^\d]/g, ''))}
+        placeholder="10-15 digits"
+        placeholderTextColor={colors.textFaint}
+        keyboardType="phone-pad"
+        maxLength={15}
+      />
+      {mobile.length > 0 && !mobileValid ? (
+        <Text style={styles.fieldError}>Mobile number must be 10-15 digits.</Text>
+      ) : null}
+
+      <Pressable style={styles.checkboxRow} onPress={() => setWhatsappAvailable((v) => !v)}>
+        <View style={[styles.checkbox, whatsappAvailable && styles.checkboxChecked]}>
+          {whatsappAvailable ? <Text style={styles.checkboxTick}>✓</Text> : null}
+        </View>
+        <Text style={styles.checkboxLabel}>This number is on WhatsApp</Text>
+      </Pressable>
 
       {/* permissions rationale */}
       <View style={styles.permCard}>
         <Text style={styles.permTitle}>App permissions</Text>
         <Text style={styles.permBody}>
-          PotholeCollect needs the camera and microphone to capture samples, and precise location so
-          every pothole carries an exact, genuine GPS coordinate. Samples without accurate location
-          are rejected.
+          PotholeCollect needs the camera and microphone to capture pothole reports, and precise
+          location so every report carries an exact, genuine GPS coordinate. Reports without an
+          accurate location are rejected.
         </Text>
         <PermRow
           label="Camera"
@@ -237,7 +317,21 @@ const styles = StyleSheet.create({
   statusChipActive: { borderColor: colors.primary, backgroundColor: '#1F2937' },
   statusText: { color: colors.textDim, fontSize: font.body, fontWeight: '600' },
   statusTextActive: { color: colors.primary },
-  note: { color: colors.textFaint, fontSize: font.tiny, marginTop: spacing.xs },
+  checkboxRow: { flexDirection: 'row', alignItems: 'center', marginTop: spacing.md },
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: spacing.sm,
+  },
+  checkboxChecked: { backgroundColor: colors.primary, borderColor: colors.primary },
+  checkboxTick: { color: colors.onPrimary, fontSize: 14, fontWeight: '800' },
+  checkboxLabel: { color: colors.text, fontSize: font.body },
   permCard: {
     backgroundColor: colors.card,
     borderRadius: radius.md,

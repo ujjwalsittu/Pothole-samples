@@ -7,9 +7,11 @@ import type {
   DashboardStats,
   LeaderboardEntry,
   LedgerEntry,
+  ModelKind,
   PackageInfo,
   Sample,
   User,
+  WithdrawalRequest,
 } from '@/shared';
 
 // ---------- auth / profile ----------
@@ -25,10 +27,17 @@ export function getMe(): Promise<MeResponse> {
 
 export interface SignupCompleteBody {
   fullName: string;
-  collectorStatus: Exclude<CollectorStatus, 'owner'>;
-  upiId: string;
   /** Base64-encoded JPEG profile photo (optional). */
   photoBase64: string | null;
+  collectorStatus: Exclude<CollectorStatus, 'owner'>;
+  /** Required for students (College/University), optional for professionals. */
+  organization: string | null;
+  /** 10-15 digits. */
+  mobile: string;
+  whatsappAvailable: boolean;
+  /** Best-effort GPS fix at signup (null when unavailable). */
+  signupLocation: { lat: number; lng: number; acc: number } | null;
+  deviceFingerprint: Record<string, unknown> | null;
 }
 
 export function signupComplete(body: SignupCompleteBody): Promise<MeResponse> {
@@ -73,11 +82,28 @@ export function registerPushToken(token: string, platform: string): Promise<{ ok
   });
 }
 
+// ---------- withdrawals (collectors only) ----------
+
+export interface WithdrawalBody {
+  amountInr: number;
+  upiId: string;
+}
+
+/** 422 EXCEEDS_ACTIVE_BALANCE / 403 NOT_A_COLLECTOR surface as ApiError. */
+export function createWithdrawal(body: WithdrawalBody): Promise<WithdrawalRequest> {
+  return api<WithdrawalRequest>('/withdrawals', { method: 'POST', body });
+}
+
+export function getWithdrawals(): Promise<WithdrawalRequest[]> {
+  return api<WithdrawalRequest[]>('/withdrawals');
+}
+
 // ---------- OTA detection model ----------
 
 /** GET /models/latest — 404 with code NO_MODEL when nothing is published. */
 export interface LatestModelInfo {
   version: number;
+  kind: ModelKind;
   sha256: string;
   sizeBytes: number;
   notes: string | null;

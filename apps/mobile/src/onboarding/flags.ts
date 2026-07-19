@@ -29,6 +29,25 @@ export async function resetWalkthrough(): Promise<void> {
   }
 }
 
+const COLLECTOR_CONGRATS_KEY = 'collector_congrats_v1';
+
+/** One-time "you've been made a collector" banner. */
+export async function hasSeenCollectorCongrats(): Promise<boolean> {
+  try {
+    return (await AsyncStorage.getItem(COLLECTOR_CONGRATS_KEY)) === '1';
+  } catch {
+    return true;
+  }
+}
+
+export async function markCollectorCongratsSeen(): Promise<void> {
+  try {
+    await AsyncStorage.setItem(COLLECTOR_CONGRATS_KEY, '1');
+  } catch {
+    // non-fatal
+  }
+}
+
 export async function hasSeenCoachMark(key: CoachMarkKey): Promise<boolean> {
   try {
     return (await AsyncStorage.getItem(key)) === '1';

@@ -1,7 +1,8 @@
 /** Shared domain types — mirror of the PostgreSQL schema in apps/api/migrations. */
 
 export type UserRole = 'collector' | 'admin' | 'owner';
-export type CollectorStatus = 'student' | 'professional' | 'owner';
+/** Contributor occupation ('self' = self-employed/other). 'owner' is admin-assigned. */
+export type CollectorStatus = 'student' | 'professional' | 'self' | 'owner';
 export type AccountState = 'pending_approval' | 'approved' | 'rejected' | 'suspended';
 
 export interface User {
@@ -12,6 +13,20 @@ export interface User {
   photoUrl: string | null;
   role: UserRole;
   collectorStatus: CollectorStatus;
+  /**
+   * Paid-collector flag, ADMIN-ASSIGNED only. Regular users contribute
+   * pothole reports voluntarily (the platform is marketed as pothole
+   * submission, not rewards). Only collectors accrue earnings/withdrawals.
+   */
+  isCollector: boolean;
+  /** College/University (students) or Company (professionals, optional). */
+  organization: string | null;
+  mobile: string | null;
+  whatsappAvailable: boolean;
+  /** Captured at signup, shown to admins. */
+  signupLocation: { lat: number; lng: number; acc: number } | null;
+  deviceFingerprint: Record<string, unknown> | null;
+  /** Set when the collector first requests a withdrawal (not at signup). */
   upiId: string | null;
   accountState: AccountState;
   packageCode: string;
@@ -131,6 +146,8 @@ export interface LedgerEntry {
   type: LedgerEntryType;
   /** Positive for earnings, negative for settlements (paid out). */
   amountInr: number;
+  /** Earnings only: 'upcoming' until the media track's quota completes. */
+  earningState: EarningState | null;
   sampleId: string | null;
   settlementId: string | null;
   note: string | null;
@@ -169,24 +186,61 @@ export interface DashboardStats {
     photoQuota: number;
     videosDone: number;
     photosDone: number;
-    payoutInr: number;
+    videoPayoutInr: number;
+    photoPayoutInr: number;
   };
+  /** All money fields are zero / hidden for non-collectors. */
   earnedInr: number;
   settledInr: number;
+  /** Withdrawable now: active earnings minus settlements. */
+  activeInr: number;
+  /** Accrued on incomplete tracks — not yet withdrawable. */
+  upcomingInr: number;
   balanceInr: number;
 }
 
-/** A configurable earnings package (packages table; DEFAULT_PACKAGE seeds one). */
+/**
+ * A configurable collector plan. Each media track pays out INDEPENDENTLY:
+ * completing videoQuota accepted videos activates videoPayoutInr; completing
+ * photoQuota accepted photos activates photoPayoutInr. Partial progress on a
+ * track activates nothing (an incomplete photo track earns ₹0 even at
+ * quota-1). Tracks repeat: every further full quota activates another payout.
+ */
 export interface PackageInfo {
   code: string;
   name: string;
   videoQuota: number;
+  /** Payout for a completed video track (the "X" for videos). */
+  videoPayoutInr: number;
   photoQuota: number;
-  payoutInr: number;
+  /** Payout for a completed photo track (the "Y" for photos). */
+  photoPayoutInr: number;
   active: boolean;
   /** Package auto-assigned when this one completes (null = stop). */
   nextPackageCode: string | null;
 }
+
+/** Earning lifecycle: accrues as 'upcoming' per accepted sample; flips to
+ * 'active' (withdrawable) only when its media track's quota completes. */
+export type EarningState = 'upcoming' | 'active';
+
+export type WithdrawalState = 'requested' | 'approved' | 'rejected' | 'paid';
+
+/** A collector-initiated withdrawal request (UPI captured at request time). */
+export interface WithdrawalRequest {
+  id: string;
+  userId: string;
+  amountInr: number;
+  upiId: string;
+  state: WithdrawalState;
+  note: string | null;
+  decidedBy: string | null;
+  decidedAt: string | null;
+  settlementId: string | null;
+  createdAt: string;
+}
+
+export type ModelKind = 'road-binary' | 'ssd-coco';
 
 /** A geo-targeted collection campaign ("we need this zone covered"). */
 export interface Campaign {
@@ -258,10 +312,14 @@ export type SettlementConfirmState = 'awaiting_confirmation' | 'confirmed' | 'ca
 /** Training-data export formats. PyTorch consumers use the COCO output. */
 export type ExportFormat = 'coco' | 'yolo' | 'voc';
 
-/** A published on-device TFLite model release (OTA-distributed to the app). */
+/** A published on-device TFLite model release (OTA-distributed to the app).
+ * kind selects the app-side adapter: 'road-binary' = [1,224,224,3]u8 →
+ * [roadProb,potholeProb]; 'ssd-coco' = SSD detector (e.g. SSDLite-MobileNetV2)
+ * used for avoid-object guidance (people/vehicles/animals/signs). */
 export interface ModelRelease {
   id: string;
   version: number;
+  kind: ModelKind;
   filename: string;
   sha256: string;
   sizeBytes: number;

@@ -158,7 +158,9 @@ function RankRow({ entry }: { entry: LeaderboardEntry }) {
           {entry.streakDays > 1 ? ` · ${entry.streakDays}d streak` : ''}
         </Text>
       </View>
-      <Text style={styles.rowEarned}>₹{entry.earnedInr}</Text>
+      {/* Money is collector-only; the API zeroes earnings for everyone else,
+          so a ₹ amount is rendered only when a positive value exists. */}
+      {entry.earnedInr > 0 ? <Text style={styles.rowEarned}>₹{entry.earnedInr}</Text> : null}
     </View>
   );
 }
