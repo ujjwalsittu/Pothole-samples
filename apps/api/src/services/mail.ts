@@ -108,6 +108,18 @@ export const mail = {
       ),
     ),
 
+  packageComplete: (to: string, fullName: string, packageName: string, payoutInr: number, nextPackageName: string | null) =>
+    send(
+      to,
+      `${APP_NAME}: package complete — ₹${payoutInr} earned`,
+      layout(
+        'Package complete!',
+        `<p>Hi ${fullName},</p>
+         <p>You completed the <b>${packageName}</b> package and earned <b>₹${payoutInr}</b>. Great work!</p>
+         ${nextPackageName ? `<p>Your next package, <b>${nextPackageName}</b>, has started automatically.</p>` : ''}`,
+      ),
+    ),
+
   sampleRejected: (to: string, fullName: string, sampleId: string, reason: string) =>
     send(
       to,

@@ -48,7 +48,7 @@ export function absPath(relPath: string): string {
 }
 
 export async function ensureStorageDirs(): Promise<void> {
-  for (const d of ['samples', 'profiles', 'proofs']) {
+  for (const d of ['samples', 'profiles', 'proofs', 'frames', 'thumbs']) {
     await fsp.mkdir(path.join(config.storageDir, d), { recursive: true });
   }
 }

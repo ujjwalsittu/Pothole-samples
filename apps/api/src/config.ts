@@ -30,6 +30,9 @@ export const config = {
   googleServiceAccountJson: env('GOOGLE_SERVICE_ACCOUNT_JSON'),
   driveFolderId: env('DRIVE_FOLDER_ID'),
 
+  /** OSRM base URL for map-matching (e.g. https://router.project-osrm.org). */
+  osrmUrl: env('OSRM_URL'),
+
   corsOrigins: env('CORS_ORIGINS')
     .split(',')
     .map((s) => s.trim())

@@ -6,6 +6,7 @@ import { errorHandler, notFoundHandler } from './http';
 import { attachUser, authenticate } from './middleware/auth';
 import { ensureStorageDirs } from './services/storage';
 import { adminRouter } from './routes/admin';
+import { communityRouter } from './routes/community';
 import { dashboardRouter } from './routes/dashboard';
 import { earningsRouter } from './routes/earnings';
 import { mediaRouter } from './routes/media';
@@ -39,6 +40,7 @@ app.use(base, authChain, dashboardRouter);
 app.use(base, authChain, samplesRouter);
 app.use(base, authChain, mediaRouter);
 app.use(base, authChain, earningsRouter);
+app.use(base, authChain, communityRouter);
 app.use(`${base}/admin`, authChain, adminRouter);
 
 app.use(notFoundHandler);

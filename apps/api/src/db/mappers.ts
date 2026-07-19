@@ -1,9 +1,13 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import type {
   Annotation,
+  AuditLogEntry,
+  Campaign,
   LedgerEntry,
+  PackageInfo,
   Sample,
   Settlement,
+  SettlementConfirmState,
   User,
 } from '@pothole/shared';
 
@@ -55,7 +59,14 @@ export function rowToSample(r: Row): Sample {
   };
 }
 
-export function rowToAnnotation(r: Row): Annotation {
+/** Annotation + server-side extras (map-matching corrections). */
+export type AnnotationOut = Annotation & {
+  correctedLat: number | null;
+  correctedLng: number | null;
+  correctionSource: string | null;
+};
+
+export function rowToAnnotation(r: Row): AnnotationOut {
   return {
     id: r.id,
     sampleId: r.sample_id,
@@ -67,6 +78,9 @@ export function rowToAnnotation(r: Row): Annotation {
     lat: num(r.lat),
     lng: num(r.lng),
     estimate: r.estimate ?? null,
+    correctedLat: numOrNull(r.corrected_lat),
+    correctedLng: numOrNull(r.corrected_lng),
+    correctionSource: r.correction_source ?? null,
   };
 }
 
@@ -86,7 +100,15 @@ export function rowToLedgerEntry(r: Row): LedgerEntry & { settled: boolean; sett
   };
 }
 
-export function rowToSettlement(r: Row): Settlement {
+/** Settlement + two-admin confirmation extras. */
+export type SettlementOut = Settlement & {
+  confirmState: SettlementConfirmState | null;
+  initiatedBy: string | null;
+  confirmedBy: string | null;
+  confirmedAt: string | null;
+};
+
+export function rowToSettlement(r: Row): SettlementOut {
   return {
     id: r.id,
     userId: r.user_id,
@@ -96,6 +118,49 @@ export function rowToSettlement(r: Row): Settlement {
     settledAt: iso(r.settled_at),
     proofUrl: r.proof_path ?? null,
     utrReference: r.utr_reference ?? null,
+    createdAt: iso(r.created_at) as string,
+    confirmState: (r.confirm_state ?? null) as SettlementConfirmState | null,
+    initiatedBy: r.initiated_by ?? null,
+    confirmedBy: r.confirmed_by ?? null,
+    confirmedAt: iso(r.confirmed_at),
+  };
+}
+
+export function rowToPackage(r: Row): PackageInfo {
+  return {
+    code: r.code,
+    name: r.name,
+    videoQuota: num(r.video_quota),
+    photoQuota: num(r.photo_quota),
+    payoutInr: num(r.payout_inr),
+    active: r.active == null ? true : Boolean(r.active),
+    nextPackageCode: r.next_package_code ?? null,
+  };
+}
+
+export function rowToCampaign(r: Row): Campaign {
+  return {
+    id: r.id,
+    name: r.name,
+    description: r.description ?? null,
+    polygon: r.polygon ?? [],
+    boost: num(r.boost),
+    active: Boolean(r.active),
+    startsAt: iso(r.starts_at),
+    endsAt: iso(r.ends_at),
+    createdAt: iso(r.created_at) as string,
+  };
+}
+
+export function rowToAuditEntry(r: Row): AuditLogEntry {
+  return {
+    id: r.id,
+    actorId: r.actor_id,
+    actorName: r.actor_name ?? '',
+    action: r.action,
+    targetType: r.target_type,
+    targetId: r.target_id ?? '',
+    detail: r.detail ?? null,
     createdAt: iso(r.created_at) as string,
   };
 }

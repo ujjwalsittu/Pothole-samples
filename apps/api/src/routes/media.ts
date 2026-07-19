@@ -1,7 +1,9 @@
-import { Router } from 'express';
+import { Router, type Response } from 'express';
 import { query } from '../db/pool';
 import { ApiError, asyncH } from '../http';
-import { requireUser } from '../middleware/auth';
+import { requireRole, requireUser } from '../middleware/auth';
+import { findStored } from '../services/exporter';
+import { frameRelPath, thumbRelPath } from '../services/frames';
 import { openMediaStream, type StorageDriverName } from '../services/storage';
 
 export const mediaRouter = Router();
@@ -48,5 +50,45 @@ mediaRouter.get(
     if (media.contentLength != null) res.setHeader('Content-Length', media.contentLength);
     if (media.contentRange) res.setHeader('Content-Range', media.contentRange);
     media.stream?.pipe(res);
+  }),
+);
+
+async function streamDerivedJpeg(res: Response, relPath: string): Promise<void> {
+  const storedOn = await findStored(relPath);
+  const media = storedOn ? await openMediaStream(relPath, storedOn) : null;
+  if (!media?.stream) throw new ApiError(404, 'MEDIA_NOT_FOUND', 'File not found');
+  res.status(200);
+  res.setHeader('Content-Type', 'image/jpeg');
+  if (media.contentLength != null) res.setHeader('Content-Length', media.contentLength);
+  media.stream.pipe(res);
+}
+
+/** GET /media/:sampleId/thumb — poster/thumbnail (owner or admin). */
+mediaRouter.get(
+  '/media/:sampleId/thumb',
+  requireUser,
+  asyncH(async (req, res) => {
+    const user = req.user!;
+    const id = req.params.sampleId;
+    if (!UUID_RE.test(id)) throw new ApiError(404, 'SAMPLE_NOT_FOUND', 'Sample not found');
+    const { rows } = await query('SELECT user_id FROM samples WHERE id = $1', [id]);
+    const isAdmin = user.role === 'admin' || user.role === 'owner';
+    if (!rows[0] || (rows[0].user_id !== user.id && !isAdmin)) {
+      throw new ApiError(404, 'SAMPLE_NOT_FOUND', 'Sample not found');
+    }
+    await streamDerivedJpeg(res, thumbRelPath(id));
+  }),
+);
+
+/** GET /media/:sampleId/frames/:annotationId — extracted review frame (admin). */
+mediaRouter.get(
+  '/media/:sampleId/frames/:annotationId',
+  requireRole('admin'),
+  asyncH(async (req, res) => {
+    const { sampleId, annotationId } = req.params;
+    if (!UUID_RE.test(sampleId) || !UUID_RE.test(annotationId)) {
+      throw new ApiError(404, 'MEDIA_NOT_FOUND', 'File not found');
+    }
+    await streamDerivedJpeg(res, frameRelPath(sampleId, annotationId));
   }),
 );

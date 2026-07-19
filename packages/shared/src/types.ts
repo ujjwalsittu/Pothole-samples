@@ -98,7 +98,12 @@ export interface Sample {
   userId: string;
   mediaType: MediaType;
   state: SampleState;
-  /** SHA-256 of the exact media file bytes (integrity + exact-dup detection). */
+  /**
+   * Content hash for integrity + exact-dup detection. NOT a raw-byte sha256:
+   * clients hash the base64 representation (per-4MB composite for large
+   * files) because expo-crypto cannot stream — see apps/mobile/src/upload/
+   * hash.ts and contentHashOfFile in apps/api/src/services/storage.ts.
+   */
   sha256: string;
   /** 64-bit perceptual hash, hex (photos; keyframes for videos). */
   phash: string | null;

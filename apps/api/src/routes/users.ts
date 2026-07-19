@@ -3,9 +3,10 @@ import multer from 'multer';
 import { v4 as uuidv4 } from 'uuid';
 import { z } from 'zod';
 import { query } from '../db/pool';
-import { rowToUser } from '../db/mappers';
+import { rowToPackage, rowToUser } from '../db/mappers';
 import { ApiError, asyncH, ok } from '../http';
 import { requireUser } from '../middleware/auth';
+import { acceptedDaysForUser, computeStreaks } from '../services/gamification';
 import { mail } from '../services/mail';
 import { extForMime, saveBuffer } from '../services/storage';
 
@@ -62,10 +63,44 @@ usersRouter.post(
   }),
 );
 
-/** GET /me — 404 USER_NOT_REGISTERED when no row exists yet. */
-usersRouter.get('/me', requireUser, (req, res) => {
-  ok(res, req.user);
-});
+/** GET /me — 404 USER_NOT_REGISTERED when no row exists yet. Includes the
+ * user's full PackageInfo as `package`. */
+usersRouter.get(
+  '/me',
+  requireUser,
+  asyncH(async (req, res) => {
+    const { rows } = await query('SELECT * FROM packages WHERE code = $1', [req.user!.packageCode]);
+    ok(res, { ...req.user!, package: rows[0] ? rowToPackage(rows[0]) : null });
+  }),
+);
+
+/** POST /me/push-token — register an Expo push token for this user. */
+usersRouter.post(
+  '/me/push-token',
+  requireUser,
+  asyncH(async (req, res) => {
+    const body = z
+      .object({ token: z.string().trim().min(8), platform: z.string().trim().max(32).optional() })
+      .parse(req.body ?? {});
+    await query(
+      `INSERT INTO push_tokens (user_id, token, platform)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (token) DO UPDATE SET user_id = $1, platform = $3, updated_at = now()`,
+      [req.user!.id, body.token, body.platform ?? null],
+    );
+    ok(res, { registered: true });
+  }),
+);
+
+/** GET /me/streak — current + best accepted-sample day streaks. */
+usersRouter.get(
+  '/me/streak',
+  requireUser,
+  asyncH(async (req, res) => {
+    const days = await acceptedDaysForUser(req.user!.id);
+    ok(res, computeStreaks(days));
+  }),
+);
 
 const patchMeSchema = z.object({
   fullName: z.string().trim().min(1).optional(),

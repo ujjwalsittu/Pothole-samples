@@ -10,6 +10,7 @@ import {
   coordinateAtVideoTime,
   hasMockedFix,
   haversineMeters,
+  pointInPolygon,
   trackSpeedsKmph,
   type Annotation,
   type GpsPoint,
@@ -19,6 +20,7 @@ import { query, withTransaction } from '../db/pool';
 import { rowToAnnotation, rowToSample } from '../db/mappers';
 import { ApiError, asyncH, ok } from '../http';
 import { requireApproved, requireUser } from '../middleware/auth';
+import { makeThumbnail } from '../services/frames';
 import { aHashHex, hammingHex } from '../services/phash';
 import {
   absPath,
@@ -189,13 +191,32 @@ samplesRouter.post(
     const id = uuidv4();
     const mediaPath = sampleRelPath(id, body.mediaMime);
 
+    // Campaign boost: capture point inside an active campaign zone (within
+    // its date window) records campaign_id + boost multiplier on the sample.
+    let campaignId: string | null = null;
+    let boostApplied: number | null = null;
+    const campaigns = await query(
+      `SELECT id, polygon, boost FROM campaigns
+       WHERE active = true
+         AND (starts_at IS NULL OR starts_at <= now())
+         AND (ends_at IS NULL OR ends_at >= now())`,
+    );
+    for (const c of campaigns.rows) {
+      const polygon = (c.polygon ?? []) as Array<{ lat: number; lng: number }>;
+      if (polygon.length >= 3 && pointInPolygon(body.lat, body.lng, polygon)) {
+        campaignId = c.id as string;
+        boostApplied = Number(c.boost);
+        break;
+      }
+    }
+
     await withTransaction(async (client) => {
       await client.query(
         `INSERT INTO samples
            (id, user_id, media_type, state, sha256, phash, captured_at, duration_sec,
             avg_speed_kmph, max_speed_kmph, lat, lng, gps_accuracy_m, mock_location_detected,
-            media_path, media_mime, size_bytes, uploaded_bytes)
-         VALUES ($1,$2,$3,'uploading',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,0)`,
+            media_path, media_mime, size_bytes, uploaded_bytes, campaign_id, boost_applied)
+         VALUES ($1,$2,$3,'uploading',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,0,$17,$18)`,
         [
           id,
           user.id,
@@ -213,6 +234,8 @@ samplesRouter.post(
           mediaPath,
           body.mediaMime,
           body.sizeBytes,
+          campaignId,
+          boostApplied,
         ],
       );
       if (body.gpsTrack) {
@@ -323,6 +346,10 @@ samplesRouter.post(
       const serverHash = await aHashHex(absPath(mediaPath));
       if (serverHash) phash = serverHash;
     }
+
+    // Thumbnail (video poster @1s via ffmpeg / 480px photo thumb via sharp)
+    // must be generated while the media is still on local staging disk.
+    await makeThumbnail(row!.id as string, mediaPath, row!.media_type as 'photo' | 'video');
 
     // Promote assembled media to the active storage driver (multipart upload
     // to S3 + delete local staging copy when STORAGE_DRIVER=s3).

@@ -1,20 +1,46 @@
+import crypto from 'node:crypto';
+import { Transform } from 'node:stream';
 import { Router, type Response } from 'express';
 import archiver from 'archiver';
 import multer from 'multer';
 import { z } from 'zod';
-import { coordinateAtVideoTime, type GpsPoint, type MediaType } from '@pothole/shared';
+import {
+  ROAD_QUALITY_GEO_PRECISION,
+  SETTLEMENT_CONFIRM_THRESHOLD_INR,
+  coordinateAtVideoTime,
+  geohashDecode,
+  geohashEncode,
+  type DatasetManifest,
+  type GpsPoint,
+  type MediaType,
+  type RoadQualityCell,
+  type User,
+} from '@pothole/shared';
+import { config } from '../config';
 import { query, withTransaction } from '../db/pool';
 import {
   rowToAnnotation,
+  rowToAuditEntry,
+  rowToCampaign,
+  rowToPackage,
   rowToSample,
   rowToSettlement,
   rowToUser,
+  type SettlementOut,
 } from '../db/mappers';
 import { ApiError, asyncH, ok } from '../http';
 import { requireRole } from '../middleware/auth';
+import { audit } from '../services/audit';
 import { insertLedgerEntry, balanceSummary } from '../services/ledger';
 import { mail } from '../services/mail';
-import { buildBundle, buildRawBundle, type BundleFile } from '../services/exporter';
+import { sendPush } from '../services/push';
+import { extractAcceptedFrames } from '../services/frames';
+import {
+  buildBundle,
+  buildRawBundle,
+  buildTrainingBundle,
+  type BundleFile,
+} from '../services/exporter';
 import { driveConfigured, exportBundleToDrive } from '../services/drive';
 import { extForMime, openMediaStream, saveBuffer } from '../services/storage';
 
@@ -54,6 +80,8 @@ adminRouter.post(
     if (!rows[0]) throw new ApiError(404, 'USER_NOT_FOUND', 'User not found');
     const user = rowToUser(rows[0]);
     void mail.accountApproved(user.email, user.fullName);
+    void sendPush(user.id, 'Account approved', 'You can start collecting pothole samples now!');
+    void audit(req.user!.id, 'user.approve', 'user', user.id);
     ok(res, user);
   }),
 );
@@ -70,6 +98,7 @@ adminRouter.post(
     if (!rows[0]) throw new ApiError(404, 'USER_NOT_FOUND', 'User not found');
     const user = rowToUser(rows[0]);
     void mail.accountRejected(user.email, user.fullName, body.reason);
+    void audit(req.user!.id, 'user.reject', 'user', user.id, { reason: body.reason });
     ok(res, user);
   }),
 );
@@ -82,16 +111,23 @@ adminRouter.patch(
       .object({
         collectorStatus: z.enum(['student', 'professional', 'owner']).optional(),
         role: z.enum(['collector', 'admin', 'owner']).optional(),
+        packageCode: z.string().trim().min(1).optional(),
       })
       .parse(req.body ?? {});
+    if (body.packageCode) {
+      const pkg = await query('SELECT code FROM packages WHERE code = $1', [body.packageCode]);
+      if (!pkg.rows[0]) throw new ApiError(404, 'PACKAGE_NOT_FOUND', 'Unknown package code');
+    }
     const { rows } = await query(
       `UPDATE users SET
          collector_status = COALESCE($2, collector_status),
-         role             = COALESCE($3, role)
+         role             = COALESCE($3, role),
+         package_code     = COALESCE($4, package_code)
        WHERE id = $1 RETURNING *`,
-      [req.params.id, body.collectorStatus ?? null, body.role ?? null],
+      [req.params.id, body.collectorStatus ?? null, body.role ?? null, body.packageCode ?? null],
     );
     if (!rows[0]) throw new ApiError(404, 'USER_NOT_FOUND', 'User not found');
+    void audit(req.user!.id, 'user.update', 'user', req.params.id, body);
     ok(res, rowToUser(rows[0]));
   }),
 );
@@ -243,6 +279,10 @@ adminRouter.post(
       ],
     );
     const potholeCount = await refreshPotholeCount(sample.id);
+    void audit(req.user!.id, 'annotation.create', 'annotation', ins.rows[0].id as string, {
+      sampleId: sample.id,
+      label: body.label,
+    });
     ok(res, { annotation: rowToAnnotation(ins.rows[0]), potholeCount }, 201);
   }),
 );
@@ -308,6 +348,10 @@ adminRouter.patch(
       ],
     );
     const potholeCount = await refreshPotholeCount(existing.sample_id);
+    void audit(req.user!.id, 'annotation.update', 'annotation', existing.id as string, {
+      sampleId: existing.sample_id,
+      ...body,
+    });
     ok(res, { annotation: rowToAnnotation(upd.rows[0]), potholeCount });
   }),
 );
@@ -329,6 +373,9 @@ adminRouter.delete(
     }
     await query('DELETE FROM annotations WHERE id = $1', [existing.id]);
     const potholeCount = await refreshPotholeCount(existing.sample_id);
+    void audit(req.user!.id, 'annotation.delete', 'annotation', existing.id as string, {
+      sampleId: existing.sample_id,
+    });
     ok(res, { deleted: true, potholeCount });
   }),
 );
@@ -398,18 +445,23 @@ adminRouter.post(
       }
 
       // POLICY: accepted and partially_accepted grant the SAME full
-      // per-sample credit (payout/quota). Adjust here if partial payouts
-      // should ever be prorated.
+      // per-sample credit (payout/quota), multiplied by the campaign boost
+      // captured at init time (samples.boost_applied). Adjust here if partial
+      // payouts should ever be prorated.
       let amountInr = 0;
-      if (body.decision === 'accepted' || body.decision === 'partially_accepted') {
+      const boost = sample.boost_applied == null ? 1 : Number(sample.boost_applied);
+      const isCredit = body.decision === 'accepted' || body.decision === 'partially_accepted';
+      if (isCredit) {
         const p = await client.query(
-          'SELECT video_quota, photo_quota, payout_inr FROM packages WHERE code = $1',
+          'SELECT name, video_quota, photo_quota, payout_inr, next_package_code FROM packages WHERE code = $1',
           [collector.packageCode],
         );
         const pkg = p.rows[0];
         if (!pkg) throw new ApiError(500, 'PACKAGE_MISSING', 'Collector has no package configured');
         const quota = sample.media_type === 'video' ? Number(pkg.video_quota) : Number(pkg.photo_quota);
-        amountInr = Math.round((Number(pkg.payout_inr) / quota) * 100) / 100;
+        const baseCredit = Math.round((Number(pkg.payout_inr) / quota) * 100) / 100;
+        amountInr = Math.round(baseCredit * boost * 100) / 100;
+        const boostNote = boost !== 1 ? ` (campaign boost ×${boost})` : '';
         await insertLedgerEntry(client, {
           userId: collector.id,
           type: 'earning',
@@ -417,8 +469,8 @@ adminRouter.post(
           sampleId: sample.id,
           note:
             body.decision === 'accepted'
-              ? `Earning for accepted ${sample.media_type} sample`
-              : `Earning for partially accepted ${sample.media_type} sample`,
+              ? `Earning for accepted ${sample.media_type} sample${boostNote}`
+              : `Earning for partially accepted ${sample.media_type} sample${boostNote}`,
         });
       }
 
@@ -437,7 +489,60 @@ adminRouter.post(
           admin.id,
         ],
       );
-      return { sample: rowToSample(upd.rows[0]), collector, amountInr };
+
+      // Auto-enroll (feature 5): when this acceptance completes either quota
+      // of the collector's package, switch to next_package_code (if set).
+      let packageCompleted: { packageName: string; payoutInr: number; nextPackageName: string | null } | null =
+        null;
+      if (isCredit) {
+        const pkgRow = (
+          await client.query(
+            'SELECT name, video_quota, photo_quota, payout_inr, next_package_code FROM packages WHERE code = $1',
+            [collector.packageCode],
+          )
+        ).rows[0];
+        const done = (
+          await client.query<{ vids: string; photos: string }>(
+            `SELECT
+               COUNT(*) FILTER (WHERE media_type = 'video') AS vids,
+               COUNT(*) FILTER (WHERE media_type = 'photo') AS photos
+             FROM samples
+             WHERE user_id = $1 AND state IN ('accepted', 'partially_accepted')`,
+            [collector.id],
+          )
+        ).rows[0];
+        const vids = Number(done.vids);
+        const photos = Number(done.photos);
+        const vQuota = Number(pkgRow.video_quota);
+        const pQuota = Number(pkgRow.photo_quota);
+        const isVideo = sample.media_type === 'video';
+        const completeNow = vids >= vQuota || photos >= pQuota;
+        const completeBefore =
+          vids - (isVideo ? 1 : 0) >= vQuota || photos - (isVideo ? 0 : 1) >= pQuota;
+        if (completeNow && !completeBefore) {
+          let nextPackageName: string | null = null;
+          const nextCode = pkgRow.next_package_code as string | null;
+          if (nextCode) {
+            const next = await client.query('SELECT name FROM packages WHERE code = $1 AND active = true', [
+              nextCode,
+            ]);
+            if (next.rows[0]) {
+              await client.query('UPDATE users SET package_code = $2 WHERE id = $1', [
+                collector.id,
+                nextCode,
+              ]);
+              nextPackageName = next.rows[0].name as string;
+            }
+          }
+          packageCompleted = {
+            packageName: pkgRow.name as string,
+            payoutInr: Number(pkgRow.payout_inr),
+            nextPackageName,
+          };
+        }
+      }
+
+      return { sample: rowToSample(upd.rows[0]), collector, amountInr, packageCompleted };
     });
 
     if (body.decision === 'accepted') {
@@ -447,12 +552,18 @@ adminRouter.post(
         result.sample.id,
         result.amountInr,
       );
+      void sendPush(result.collector.id, 'Sample accepted', `₹${result.amountInr} credited to your balance.`);
     } else if (body.decision === 'partially_accepted') {
       void mail.samplePartiallyAccepted(
         result.collector.email,
         result.collector.fullName,
         result.sample.id,
         result.amountInr,
+      );
+      void sendPush(
+        result.collector.id,
+        'Sample accepted with adjustments',
+        `₹${result.amountInr} credited to your balance.`,
       );
     } else {
       void mail.sampleRejected(
@@ -461,7 +572,35 @@ adminRouter.post(
         result.sample.id,
         body.reason ?? '',
       );
+      void sendPush(result.collector.id, 'Sample rejected', body.reason ?? 'Please capture a new sample.');
     }
+
+    if (result.packageCompleted) {
+      void mail.packageComplete(
+        result.collector.email,
+        result.collector.fullName,
+        result.packageCompleted.packageName,
+        result.packageCompleted.payoutInr,
+        result.packageCompleted.nextPackageName,
+      );
+      void sendPush(
+        result.collector.id,
+        'Package complete!',
+        `You earned ₹${result.packageCompleted.payoutInr}${result.packageCompleted.nextPackageName ? ` — ${result.packageCompleted.nextPackageName} started` : ''}.`,
+      );
+    }
+
+    // Extract per-annotation video frames for accepted/partial videos
+    // (fire-and-forget; requires system ffmpeg).
+    if (body.decision !== 'rejected' && result.sample.mediaType === 'video') {
+      void extractAcceptedFrames(result.sample.id);
+    }
+
+    void audit(admin.id, 'sample.review', 'sample', result.sample.id, {
+      decision: body.decision,
+      reason: body.reason ?? null,
+      creditedInr: result.amountInr || null,
+    });
     ok(res, { sample: result.sample, creditedInr: result.amountInr || null });
   }),
 );
@@ -495,10 +634,67 @@ adminRouter.get(
   }),
 );
 
+type TxClient = Parameters<Parameters<typeof withTransaction>[0]>[0];
+
+/** Unsettled balance (₹) for a user; caller must hold the user row lock. */
+async function unsettledBalance(client: TxClient, userId: string): Promise<number> {
+  const bal = await client.query<{ balance: string }>(
+    `SELECT COALESCE(SUM(amount_inr), 0) AS balance FROM ledger_entries WHERE user_id = $1`,
+    [userId],
+  );
+  return Math.round(Number(bal.rows[0].balance) * 100) / 100;
+}
+
 /**
- * POST /admin/users/:id/settlements — manual payout. Caps the amount at the
- * unsettled balance, records the settlement + negative ledger entry and marks
- * earnings (oldest first) as settled.
+ * Execute the ledger side of a settlement: negative running-balance entry +
+ * mark earnings settled oldest-first up to the amount.
+ */
+async function settleLedger(
+  client: TxClient,
+  collectorId: string,
+  settlementId: string,
+  amountInr: number,
+  utrReference: string | null,
+): Promise<void> {
+  await insertLedgerEntry(client, {
+    userId: collectorId,
+    type: 'settlement',
+    amountInr: -amountInr,
+    settlementId,
+    note: utrReference ? `Payout (UTR ${utrReference})` : 'Payout',
+  });
+  const earnings = await client.query<{ id: string; amount_inr: string }>(
+    `SELECT id, amount_inr FROM ledger_entries
+     WHERE user_id = $1 AND type = 'earning' AND settled = false
+     ORDER BY created_at ASC, id ASC
+     FOR UPDATE`,
+    [collectorId],
+  );
+  let remaining = amountInr;
+  const toSettle: string[] = [];
+  for (const e of earnings.rows) {
+    if (remaining <= 0) break;
+    toSettle.push(e.id);
+    remaining = Math.round((remaining - Number(e.amount_inr)) * 100) / 100;
+  }
+  if (toSettle.length > 0) {
+    await client.query(
+      `UPDATE ledger_entries SET settled = true, settled_at = now() WHERE id = ANY($1::uuid[])`,
+      [toSettle],
+    );
+  }
+}
+
+function notifySettled(collector: User, amountInr: number, utr: string | null): void {
+  void mail.settlementCompleted(collector.email, collector.fullName, amountInr, utr);
+  void sendPush(collector.id, 'Payout settled', `₹${amountInr} has been paid to your UPI.`);
+}
+
+/**
+ * POST /admin/users/:id/settlements — manual payout, capped at the unsettled
+ * balance. Amounts >= SETTLEMENT_CONFIRM_THRESHOLD_INR require a SECOND admin
+ * to confirm before the ledger is touched (two-admin control); smaller
+ * amounts settle immediately.
  */
 adminRouter.post(
   '/users/:id/settlements',
@@ -518,11 +714,7 @@ adminRouter.post(
       if (!u.rows[0]) throw new ApiError(404, 'USER_NOT_FOUND', 'User not found');
       const collector = rowToUser(u.rows[0]);
 
-      const bal = await client.query<{ balance: string }>(
-        `SELECT COALESCE(SUM(amount_inr), 0) AS balance FROM ledger_entries WHERE user_id = $1`,
-        [collector.id],
-      );
-      const balance = Math.round(Number(bal.rows[0].balance) * 100) / 100;
+      const balance = await unsettledBalance(client, collector.id);
       if (balance <= 0) throw new ApiError(409, 'NO_BALANCE', 'User has no unsettled balance');
       const amountInr = Math.min(body.amountInr, balance);
 
@@ -532,53 +724,475 @@ adminRouter.post(
         await saveBuffer(proofPath, req.file.buffer);
       }
 
+      const needsConfirmation = amountInr >= SETTLEMENT_CONFIRM_THRESHOLD_INR;
       const st = await client.query(
-        `INSERT INTO settlements (user_id, amount_inr, state, settled_by, settled_at, proof_path, utr_reference)
-         VALUES ($1, $2, 'settled', $3, now(), $4, $5) RETURNING *`,
-        [collector.id, amountInr, admin.id, proofPath, body.utrReference ?? null],
+        needsConfirmation
+          ? `INSERT INTO settlements
+               (user_id, amount_inr, state, proof_path, utr_reference, confirm_state, initiated_by)
+             VALUES ($1, $2, 'initiated', $3, $4, 'awaiting_confirmation', $5) RETURNING *`
+          : `INSERT INTO settlements
+               (user_id, amount_inr, state, settled_by, settled_at, proof_path, utr_reference, initiated_by)
+             VALUES ($1, $2, 'settled', $5, now(), $3, $4, $5) RETURNING *`,
+        [collector.id, amountInr, proofPath, body.utrReference ?? null, admin.id],
       );
       const settlement = rowToSettlement(st.rows[0]);
 
-      await insertLedgerEntry(client, {
-        userId: collector.id,
-        type: 'settlement',
-        amountInr: -amountInr,
-        settlementId: settlement.id,
-        note: body.utrReference ? `Payout (UTR ${body.utrReference})` : 'Payout',
-      });
-
-      // Mark earnings settled, oldest first, until the settled amount is covered.
-      const earnings = await client.query<{ id: string; amount_inr: string }>(
-        `SELECT id, amount_inr FROM ledger_entries
-         WHERE user_id = $1 AND type = 'earning' AND settled = false
-         ORDER BY created_at ASC, id ASC
-         FOR UPDATE`,
-        [collector.id],
-      );
-      let remaining = amountInr;
-      const toSettle: string[] = [];
-      for (const e of earnings.rows) {
-        if (remaining <= 0) break;
-        toSettle.push(e.id);
-        remaining = Math.round((remaining - Number(e.amount_inr)) * 100) / 100;
+      if (!needsConfirmation) {
+        await settleLedger(client, collector.id, settlement.id, amountInr, body.utrReference ?? null);
       }
-      if (toSettle.length > 0) {
-        await client.query(
-          `UPDATE ledger_entries SET settled = true, settled_at = now() WHERE id = ANY($1::uuid[])`,
-          [toSettle],
-        );
-      }
-
-      return { settlement, collector, amountInr };
+      return { settlement, collector, amountInr, needsConfirmation };
     });
 
-    void mail.settlementCompleted(
-      result.collector.email,
-      result.collector.fullName,
-      result.amountInr,
-      result.settlement.utrReference,
-    );
+    if (result.needsConfirmation) {
+      void audit(admin.id, 'settlement.initiate', 'settlement', result.settlement.id, {
+        userId: result.collector.id,
+        amountInr: result.amountInr,
+        awaitingConfirmation: true,
+      });
+    } else {
+      notifySettled(result.collector, result.amountInr, result.settlement.utrReference);
+      void audit(admin.id, 'settlement.settle', 'settlement', result.settlement.id, {
+        userId: result.collector.id,
+        amountInr: result.amountInr,
+      });
+    }
     ok(res, result.settlement, 201);
+  }),
+);
+
+/**
+ * POST /admin/settlements/:id/confirm — second-admin confirmation for large
+ * settlements. MUST be a different admin than the initiator (SAME_ADMIN).
+ */
+adminRouter.post(
+  '/settlements/:id/confirm',
+  asyncH(async (req, res) => {
+    assertUuid(req.params.id, 'SETTLEMENT_NOT_FOUND', 'Settlement');
+    const admin = req.user!;
+
+    const result = await withTransaction(async (client) => {
+      const st = await client.query('SELECT * FROM settlements WHERE id = $1 FOR UPDATE', [req.params.id]);
+      const row = st.rows[0];
+      if (!row) throw new ApiError(404, 'SETTLEMENT_NOT_FOUND', 'Settlement not found');
+      if (row.confirm_state !== 'awaiting_confirmation') {
+        throw new ApiError(409, 'NOT_AWAITING_CONFIRMATION', `Settlement confirm state is ${row.confirm_state ?? 'null'}`);
+      }
+      if (row.initiated_by === admin.id) {
+        throw new ApiError(403, 'SAME_ADMIN', 'A different admin must confirm this settlement');
+      }
+
+      const u = await client.query('SELECT * FROM users WHERE id = $1 FOR UPDATE', [row.user_id]);
+      const collector = rowToUser(u.rows[0]);
+      const balance = await unsettledBalance(client, collector.id);
+      if (balance <= 0) throw new ApiError(409, 'NO_BALANCE', 'User has no unsettled balance');
+      const amountInr = Math.min(Number(row.amount_inr), balance);
+
+      const upd = await client.query(
+        `UPDATE settlements SET
+           amount_inr = $2, state = 'settled', confirm_state = 'confirmed',
+           confirmed_by = $3, confirmed_at = now(), settled_by = $3, settled_at = now()
+         WHERE id = $1 RETURNING *`,
+        [row.id, amountInr, admin.id],
+      );
+      await settleLedger(client, collector.id, row.id as string, amountInr, (row.utr_reference as string | null) ?? null);
+      return { settlement: rowToSettlement(upd.rows[0]), collector, amountInr };
+    });
+
+    notifySettled(result.collector, result.amountInr, result.settlement.utrReference);
+    void audit(admin.id, 'settlement.confirm', 'settlement', result.settlement.id, {
+      userId: result.collector.id,
+      amountInr: result.amountInr,
+    });
+    ok(res, result.settlement);
+  }),
+);
+
+/** POST /admin/settlements/:id/cancel — cancel an awaiting settlement. */
+adminRouter.post(
+  '/settlements/:id/cancel',
+  asyncH(async (req, res) => {
+    assertUuid(req.params.id, 'SETTLEMENT_NOT_FOUND', 'Settlement');
+    const { rows } = await query(
+      `UPDATE settlements SET confirm_state = 'cancelled'
+       WHERE id = $1 AND confirm_state = 'awaiting_confirmation' RETURNING *`,
+      [req.params.id],
+    );
+    if (!rows[0]) {
+      throw new ApiError(409, 'NOT_AWAITING_CONFIRMATION', 'Settlement is not awaiting confirmation');
+    }
+    void audit(req.user!.id, 'settlement.cancel', 'settlement', req.params.id);
+    ok(res, rowToSettlement(rows[0]));
+  }),
+);
+
+/* ------------------------------ campaigns ------------------------------- */
+
+const campaignBodySchema = z.object({
+  name: z.string().trim().min(1),
+  description: z.string().trim().nullish(),
+  polygon: z
+    .array(z.object({ lat: z.number().min(-90).max(90), lng: z.number().min(-180).max(180) }))
+    .min(3, 'Campaign polygon needs at least 3 vertices'),
+  boost: z.coerce.number().positive().max(100).optional(),
+  active: z.boolean().optional(),
+  startsAt: z.string().datetime({ offset: true }).nullish(),
+  endsAt: z.string().datetime({ offset: true }).nullish(),
+});
+
+adminRouter.get(
+  '/campaigns',
+  asyncH(async (_req, res) => {
+    const { rows } = await query('SELECT * FROM campaigns ORDER BY created_at DESC');
+    ok(res, rows.map(rowToCampaign));
+  }),
+);
+
+adminRouter.post(
+  '/campaigns',
+  asyncH(async (req, res) => {
+    const body = campaignBodySchema.parse(req.body ?? {});
+    const { rows } = await query(
+      `INSERT INTO campaigns (name, description, polygon, boost, active, starts_at, ends_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [
+        body.name,
+        body.description ?? null,
+        JSON.stringify(body.polygon),
+        body.boost ?? 1.5,
+        body.active ?? true,
+        body.startsAt ?? null,
+        body.endsAt ?? null,
+      ],
+    );
+    void audit(req.user!.id, 'campaign.create', 'campaign', rows[0].id as string, { name: body.name });
+    ok(res, rowToCampaign(rows[0]), 201);
+  }),
+);
+
+adminRouter.patch(
+  '/campaigns/:id',
+  asyncH(async (req, res) => {
+    assertUuid(req.params.id, 'CAMPAIGN_NOT_FOUND', 'Campaign');
+    const body = campaignBodySchema.partial().parse(req.body ?? {});
+    const { rows } = await query(
+      `UPDATE campaigns SET
+         name        = COALESCE($2, name),
+         description = COALESCE($3, description),
+         polygon     = COALESCE($4, polygon),
+         boost       = COALESCE($5, boost),
+         active      = COALESCE($6, active),
+         starts_at   = COALESCE($7, starts_at),
+         ends_at     = COALESCE($8, ends_at)
+       WHERE id = $1 RETURNING *`,
+      [
+        req.params.id,
+        body.name ?? null,
+        body.description ?? null,
+        body.polygon ? JSON.stringify(body.polygon) : null,
+        body.boost ?? null,
+        body.active ?? null,
+        body.startsAt ?? null,
+        body.endsAt ?? null,
+      ],
+    );
+    if (!rows[0]) throw new ApiError(404, 'CAMPAIGN_NOT_FOUND', 'Campaign not found');
+    void audit(req.user!.id, 'campaign.update', 'campaign', req.params.id, body as Record<string, unknown>);
+    ok(res, rowToCampaign(rows[0]));
+  }),
+);
+
+adminRouter.delete(
+  '/campaigns/:id',
+  asyncH(async (req, res) => {
+    assertUuid(req.params.id, 'CAMPAIGN_NOT_FOUND', 'Campaign');
+    // Samples may reference the campaign; detach them, then delete.
+    await query('UPDATE samples SET campaign_id = NULL WHERE campaign_id = $1', [req.params.id]);
+    const { rows } = await query('DELETE FROM campaigns WHERE id = $1 RETURNING id', [req.params.id]);
+    if (!rows[0]) throw new ApiError(404, 'CAMPAIGN_NOT_FOUND', 'Campaign not found');
+    void audit(req.user!.id, 'campaign.delete', 'campaign', req.params.id);
+    ok(res, { deleted: true });
+  }),
+);
+
+/* ------------------------------- packages ------------------------------- */
+
+adminRouter.get(
+  '/packages',
+  asyncH(async (_req, res) => {
+    const { rows } = await query('SELECT * FROM packages ORDER BY code');
+    ok(res, rows.map(rowToPackage));
+  }),
+);
+
+adminRouter.post(
+  '/packages',
+  asyncH(async (req, res) => {
+    const body = z
+      .object({
+        code: z.string().trim().min(1).max(64).regex(/^[A-Z0-9_]+$/i),
+        name: z.string().trim().min(1),
+        videoQuota: z.coerce.number().int().positive(),
+        photoQuota: z.coerce.number().int().positive(),
+        payoutInr: z.coerce.number().int().positive(),
+        active: z.boolean().optional(),
+        nextPackageCode: z.string().trim().nullish(),
+      })
+      .parse(req.body ?? {});
+    const exists = await query('SELECT code FROM packages WHERE code = $1', [body.code]);
+    if (exists.rows[0]) throw new ApiError(409, 'PACKAGE_EXISTS', 'Package code already exists');
+    const { rows } = await query(
+      `INSERT INTO packages (code, name, video_quota, photo_quota, payout_inr, active, next_package_code)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [
+        body.code,
+        body.name,
+        body.videoQuota,
+        body.photoQuota,
+        body.payoutInr,
+        body.active ?? true,
+        body.nextPackageCode ?? null,
+      ],
+    );
+    void audit(req.user!.id, 'package.create', 'package', body.code);
+    ok(res, rowToPackage(rows[0]), 201);
+  }),
+);
+
+/** PATCH /admin/packages/:code — code immutable; edits affect FUTURE credits only. */
+adminRouter.patch(
+  '/packages/:code',
+  asyncH(async (req, res) => {
+    const body = z
+      .object({
+        name: z.string().trim().min(1).optional(),
+        videoQuota: z.coerce.number().int().positive().optional(),
+        photoQuota: z.coerce.number().int().positive().optional(),
+        payoutInr: z.coerce.number().int().positive().optional(),
+        active: z.boolean().optional(),
+        nextPackageCode: z.string().trim().nullish(),
+      })
+      .parse(req.body ?? {});
+    if (body.nextPackageCode) {
+      const next = await query('SELECT code FROM packages WHERE code = $1', [body.nextPackageCode]);
+      if (!next.rows[0]) throw new ApiError(404, 'PACKAGE_NOT_FOUND', 'nextPackageCode does not exist');
+    }
+    const { rows } = await query(
+      `UPDATE packages SET
+         name              = COALESCE($2, name),
+         video_quota       = COALESCE($3, video_quota),
+         photo_quota       = COALESCE($4, photo_quota),
+         payout_inr        = COALESCE($5, payout_inr),
+         active            = COALESCE($6, active),
+         next_package_code = CASE WHEN $8 THEN $7 ELSE next_package_code END
+       WHERE code = $1 RETURNING *`,
+      [
+        req.params.code,
+        body.name ?? null,
+        body.videoQuota ?? null,
+        body.photoQuota ?? null,
+        body.payoutInr ?? null,
+        body.active ?? null,
+        body.nextPackageCode ?? null,
+        body.nextPackageCode !== undefined,
+      ],
+    );
+    if (!rows[0]) throw new ApiError(404, 'PACKAGE_NOT_FOUND', 'Package not found');
+    void audit(req.user!.id, 'package.update', 'package', req.params.code, body as Record<string, unknown>);
+    ok(res, rowToPackage(rows[0]));
+  }),
+);
+
+/* ------------------------------ audit log ------------------------------- */
+
+adminRouter.get(
+  '/audit',
+  asyncH(async (req, res) => {
+    const q = z
+      .object({
+        limit: z.coerce.number().int().min(1).max(500).default(100),
+        before: z.string().datetime({ offset: true }).optional(),
+        action: z.string().trim().optional(),
+      })
+      .parse({
+        limit: req.query.limit ?? 100,
+        before: req.query.before,
+        action: req.query.action,
+      });
+    const { rows } = await query(
+      `SELECT a.*, u.full_name AS actor_name
+       FROM audit_log a LEFT JOIN users u ON u.id = a.actor_id
+       WHERE ($2::timestamptz IS NULL OR a.created_at < $2)
+         AND ($3::text IS NULL OR a.action = $3)
+       ORDER BY a.created_at DESC
+       LIMIT $1`,
+      [q.limit, q.before ?? null, q.action ?? null],
+    );
+    ok(res, rows.map(rowToAuditEntry));
+  }),
+);
+
+/* ----------------------------- road quality ----------------------------- */
+
+/**
+ * GET /admin/road-quality — RoadQualityCell[] aggregated over accepted /
+ * partially_accepted annotations (map-matched coords preferred).
+ *
+ * severityIndex formula (documented): each annotation in a ~150 m geohash
+ * cell contributes 12 points; 'pothole-cluster' annotations add a further 10
+ * (they represent several potholes). Capped at 100.
+ */
+adminRouter.get(
+  '/road-quality',
+  asyncH(async (_req, res) => {
+    const { rows } = await query<{
+      sample_id: string;
+      label: string;
+      lat: string;
+      lng: string;
+    }>(
+      `SELECT a.sample_id, a.label,
+              COALESCE(a.corrected_lat, a.lat) AS lat,
+              COALESCE(a.corrected_lng, a.lng) AS lng
+       FROM annotations a
+       JOIN samples s ON s.id = a.sample_id
+       WHERE s.state IN ('accepted', 'partially_accepted') AND a.status <> 'rejected'`,
+    );
+
+    const cells = new Map<string, { samples: Set<string>; potholes: number; clusters: number }>();
+    for (const r of rows) {
+      const gh = geohashEncode(Number(r.lat), Number(r.lng), ROAD_QUALITY_GEO_PRECISION);
+      const cell = cells.get(gh) ?? { samples: new Set<string>(), potholes: 0, clusters: 0 };
+      cell.samples.add(r.sample_id);
+      cell.potholes += 1;
+      if (r.label === 'pothole-cluster') cell.clusters += 1;
+      cells.set(gh, cell);
+    }
+
+    const result: RoadQualityCell[] = [...cells.entries()]
+      .map(([geohash, c]) => {
+        const { lat, lng } = geohashDecode(geohash);
+        return {
+          geohash,
+          lat: Math.round(lat * 1e6) / 1e6,
+          lng: Math.round(lng * 1e6) / 1e6,
+          sampleCount: c.samples.size,
+          potholeCount: c.potholes,
+          severityIndex: Math.min(100, Math.round(c.potholes * 12 + c.clusters * 10)),
+        };
+      })
+      .sort((a, b) => b.severityIndex - a.severityIndex);
+    ok(res, result);
+  }),
+);
+
+/* ------------------------------ map-matching ---------------------------- */
+
+interface OsrmMatchResponse {
+  code: string;
+  tracepoints: Array<{ location: [number, number] } | null>;
+}
+
+/**
+ * POST /admin/postprocess/map-match {sampleIds?} — snap video-annotation
+ * coordinates to the road network via OSRM. Originals stay untouched;
+ * corrections land in corrected_lat/lng with correction_source='osrm'.
+ */
+adminRouter.post(
+  '/postprocess/map-match',
+  asyncH(async (req, res) => {
+    if (!config.osrmUrl) {
+      throw new ApiError(501, 'NOT_CONFIGURED', 'Set OSRM_URL to enable map-matching');
+    }
+    const body = z
+      .object({ sampleIds: z.array(z.string().regex(UUID_RE)).min(1).optional() })
+      .parse(req.body ?? {});
+
+    const { rows: samples } = await query(
+      `SELECT s.id FROM samples s
+       WHERE s.media_type = 'video'
+         AND s.state IN ('accepted', 'partially_accepted', 'pending_review')
+         AND ($1::uuid[] IS NULL OR s.id = ANY($1))`,
+      [body.sampleIds ?? null],
+    );
+
+    const results: Array<{ sampleId: string; corrected: number; error?: string }> = [];
+    for (const s of samples) {
+      const sampleId = s.id as string;
+      try {
+        const t = await query<{ recording_start_ms: string; points: GpsPoint[] }>(
+          'SELECT recording_start_ms, points FROM gps_tracks WHERE sample_id = $1',
+          [sampleId],
+        );
+        if (!t.rows[0] || t.rows[0].points.length < 2) {
+          results.push({ sampleId, corrected: 0, error: 'no track' });
+          continue;
+        }
+        const recordingStartMs = Number(t.rows[0].recording_start_ms);
+        const pts = [...t.rows[0].points].sort((a, b) => a.t - b.t);
+        // OSRM match supports at most ~100 coordinates.
+        const stride = Math.max(1, Math.ceil(pts.length / 100));
+        const sampled = pts.filter((_, i) => i % stride === 0);
+
+        const coords = sampled.map((p) => `${p.lng},${p.lat}`).join(';');
+        const timestamps = sampled.map((p) => Math.round(p.t / 1000)).join(';');
+        const url = `${config.osrmUrl.replace(/\/$/, '')}/match/v1/driving/${coords}?timestamps=${timestamps}&geometries=geojson&overview=false`;
+        const resp = await fetch(url);
+        if (!resp.ok) {
+          results.push({ sampleId, corrected: 0, error: `OSRM ${resp.status}` });
+          continue;
+        }
+        const match = (await resp.json()) as OsrmMatchResponse;
+        if (match.code !== 'Ok' || !Array.isArray(match.tracepoints)) {
+          results.push({ sampleId, corrected: 0, error: `OSRM code ${match.code}` });
+          continue;
+        }
+
+        // Matched track: snapped tracepoints keep their original timestamps.
+        const matchedTrack: GpsPoint[] = [];
+        match.tracepoints.forEach((tp, i) => {
+          if (!tp || !sampled[i]) return;
+          matchedTrack.push({
+            t: sampled[i].t,
+            lat: tp.location[1],
+            lng: tp.location[0],
+            acc: 0,
+            speedMps: null,
+            alt: null,
+            mocked: false,
+          });
+        });
+        if (matchedTrack.length < 2) {
+          results.push({ sampleId, corrected: 0, error: 'too few matched points' });
+          continue;
+        }
+
+        const anns = await query<{ id: string; video_time_sec: string | number | null }>(
+          `SELECT id, video_time_sec FROM annotations
+           WHERE sample_id = $1 AND video_time_sec IS NOT NULL`,
+          [sampleId],
+        );
+        let corrected = 0;
+        for (const a of anns.rows) {
+          const coord = coordinateAtVideoTime(matchedTrack, recordingStartMs, Number(a.video_time_sec));
+          if (!coord) continue;
+          await query(
+            `UPDATE annotations SET corrected_lat = $2, corrected_lng = $3, correction_source = 'osrm'
+             WHERE id = $1`,
+            [a.id, coord.lat, coord.lng],
+          );
+          corrected += 1;
+        }
+        results.push({ sampleId, corrected });
+      } catch (err) {
+        results.push({ sampleId, corrected: 0, error: (err as Error).message });
+      }
+    }
+
+    void audit(req.user!.id, 'postprocess.map-match', 'sample', body.sampleIds?.join(',') ?? 'all', {
+      samples: results.length,
+      corrected: results.reduce((n, r) => n + r.corrected, 0),
+    });
+    ok(res, { results });
   }),
 );
 
@@ -586,18 +1200,31 @@ adminRouter.post(
 
 const mediaTypeSchema = z.enum(['photo', 'video', 'all']).default('all');
 
-/** Stream a bundle as a zip. Media bytes are streamed verbatim via the driver. */
-async function streamZipBundle(res: Response, filename: string, files: BundleFile[]): Promise<void> {
+/** Stream a bundle as a zip; returns the sha256 of the bytes sent. */
+async function streamZipBundle(res: Response, filename: string, files: BundleFile[]): Promise<string> {
   res.status(200);
   res.setHeader('Content-Type', 'application/zip');
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+
+  const hash = crypto.createHash('sha256');
+  const tap = new Transform({
+    transform(chunk: Buffer, _enc, cb) {
+      hash.update(chunk);
+      cb(null, chunk);
+    },
+  });
 
   const archive = archiver('zip', { zlib: { level: 6 } });
   archive.on('error', (err) => {
     console.error('[export] archive error:', err);
     res.destroy(err);
   });
-  archive.pipe(res);
+  const finished = new Promise<void>((resolve, reject) => {
+    tap.on('finish', resolve);
+    tap.on('error', reject);
+  });
+  archive.pipe(tap);
+  tap.pipe(res);
 
   for (const file of files) {
     if (file.kind === 'text') {
@@ -608,6 +1235,8 @@ async function streamZipBundle(res: Response, filename: string, files: BundleFil
     }
   }
   await archive.finalize();
+  await finished;
+  return hash.digest('hex');
 }
 
 const today = (): string => new Date().toISOString().slice(0, 10);
@@ -624,13 +1253,33 @@ adminRouter.get(
 
 /**
  * Training bundle: accepted + partially_accepted, ONLY approved annotations,
- * NO GPS data anywhere. images/ + labels/{coco,yolo,classes.txt} + videos/.
+ * NO GPS data anywhere. Split-versioned (train/ val/ test/) with COCO + YOLO
+ * labels and extracted video frames. Each export is recorded in
+ * dataset_exports with the streamed zip's sha256 (dataset versioning).
  */
 adminRouter.get(
   '/export/training.zip',
-  asyncH(async (_req, res) => {
-    const files = await buildBundle('training');
-    await streamZipBundle(res, `pothole-training-${today()}.zip`, files);
+  asyncH(async (req, res) => {
+    const { files, manifest } = await buildTrainingBundle();
+    const sha256 = await streamZipBundle(res, `pothole-training-${today()}.zip`, files);
+    await query(
+      `INSERT INTO dataset_exports
+         (created_by, bundle_sha256, sample_count, annotation_count, label_counts, split_counts, samples)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [
+        req.user!.id,
+        sha256,
+        manifest.sampleCount,
+        manifest.annotationCount,
+        JSON.stringify(manifest.labelCounts),
+        JSON.stringify(manifest.splitCounts),
+        JSON.stringify(manifest.samples),
+      ],
+    );
+    void audit(req.user!.id, 'dataset.export', 'dataset', sha256, {
+      sampleCount: manifest.sampleCount,
+      splitCounts: manifest.splitCounts,
+    });
   }),
 );
 
@@ -660,6 +1309,48 @@ adminRouter.post(
       .object({ bundle: z.enum(['training', 'raw']).default('raw') })
       .parse(req.body ?? {});
     const result = await exportBundleToDrive(body.bundle);
+    void audit(req.user!.id, 'dataset.export-drive', 'dataset', result.folderId, {
+      bundle: body.bundle,
+      files: result.files,
+    });
     ok(res, result);
+  }),
+);
+
+/* --------------------------- dataset registry --------------------------- */
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+const rowToManifest = (r: Record<string, any>): DatasetManifest => ({
+  id: r.id,
+  createdAt: new Date(r.created_at).toISOString(),
+  createdBy: r.created_by ?? '',
+  bundleSha256: r.bundle_sha256 ?? '',
+  sampleCount: Number(r.sample_count),
+  annotationCount: Number(r.annotation_count),
+  labelCounts: r.label_counts ?? {},
+  splitCounts: r.split_counts ?? { train: 0, val: 0, test: 0 },
+  samples: r.samples ?? [],
+});
+
+/** GET /admin/datasets — training-export history with manifests. */
+adminRouter.get(
+  '/datasets',
+  asyncH(async (_req, res) => {
+    const { rows } = await query('SELECT * FROM dataset_exports ORDER BY created_at DESC');
+    ok(res, rows.map(rowToManifest));
+  }),
+);
+
+/** GET /admin/datasets/:id/manifest.json — one export's manifest as a file. */
+adminRouter.get(
+  '/datasets/:id/manifest.json',
+  asyncH(async (req, res) => {
+    assertUuid(req.params.id, 'DATASET_NOT_FOUND', 'Dataset export');
+    const { rows } = await query('SELECT * FROM dataset_exports WHERE id = $1', [req.params.id]);
+    if (!rows[0]) throw new ApiError(404, 'DATASET_NOT_FOUND', 'Dataset export not found');
+    const manifest = rowToManifest(rows[0]);
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename="manifest-${manifest.id}.json"`);
+    res.status(200).send(JSON.stringify(manifest, null, 2));
   }),
 );
