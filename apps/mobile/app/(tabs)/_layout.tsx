@@ -1,12 +1,32 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Tabs } from 'expo-router';
+import * as Notifications from 'expo-notifications';
 import { TabIcon } from '@/components/TabIcon';
+import { useToast } from '@/components/Toast';
 import { useAuth } from '@/auth/AuthContext';
+import {
+  configureForegroundNotifications,
+  registerForPushNotifications,
+} from '@/push/register';
 import { colors, font } from '@/theme';
 
 export default function TabsLayout() {
   const { profile } = useAuth();
+  const toast = useToast();
   const isAdmin = profile?.role === 'admin' || profile?.role === 'owner';
+
+  // Push: register once the user reaches the tabs (i.e. after approval) and
+  // surface foreground notifications as in-app toasts. All failures are silent.
+  useEffect(() => {
+    configureForegroundNotifications();
+    void registerForPushNotifications();
+    const sub = Notifications.addNotificationReceivedListener((notification) => {
+      const { title, body } = notification.request.content;
+      const message = [title, body].filter(Boolean).join(' — ');
+      if (message) toast.show(message, 'info');
+    });
+    return () => sub.remove();
+  }, [toast]);
 
   return (
     <Tabs
@@ -40,6 +60,13 @@ export default function TabsLayout() {
         options={{
           title: 'Earnings',
           tabBarIcon: ({ color }) => <TabIcon name="earnings" color={color} />,
+        }}
+      />
+      <Tabs.Screen
+        name="ranks"
+        options={{
+          title: 'Ranks',
+          tabBarIcon: ({ color }) => <TabIcon name="ranks" color={color} />,
         }}
       />
       <Tabs.Screen

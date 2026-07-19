@@ -146,8 +146,9 @@ export default function AnnotateVideoScreen() {
       });
       clearCapture();
       router.replace('/capture/queue');
-    } catch {
-      setError('Could not save the sample locally. Try again.');
+    } catch (e) {
+      // Surface specific messages (e.g. the 1 GB video limit) from createDraft.
+      setError(e instanceof Error && e.message ? e.message : 'Could not save the sample locally. Try again.');
     } finally {
       setSaving(false);
     }

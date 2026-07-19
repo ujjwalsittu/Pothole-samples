@@ -58,6 +58,12 @@
         }
       ],
       [
+        "expo-notifications",
+        {
+          "color": "#F59E0B"
+        }
+      ],
+      [
         "react-native-auth0",
         {
           "domain": "YOUR_TENANT.auth0.com",

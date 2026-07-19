@@ -64,52 +64,106 @@ plugin entry in `app.json` (`plugins`) — replace it in both places, then re-ru
 `npx expo prebuild --clean`. Values are read at runtime via `expo-constants`
 (`src/config.ts`).
 
+## Push notifications
+
+`expo-notifications` is configured (dependency + config plugin). Registration
+happens **after admin approval** — the first time the tab bar mounts, never
+during onboarding — and POSTs the Expo push token to `/me/push-token`.
+Permission denial is fully graceful (the app just never registers). Foreground
+notifications are suppressed at the OS level and surfaced through the in-app
+snackbar instead. For EAS builds set `extra.eas.projectId` (added automatically
+by `eas init`) so `getExpoPushTokenAsync` can mint tokens.
+
+## On-device road guidance (src/detection/)
+
+A pluggable `FrameAdvisor` interface guides collectors while capturing
+(`analyze(frame) → { roadLikely, potholeLikely, hint }`). Two implementations:
+
+- **HeuristicAdvisor (default, zero extra deps):** expo-camera cannot stream
+  frames without additional native libraries, so the default advisor works from
+  what the standard build has: device pitch via `expo-sensors` DeviceMotion
+  (pointing at the sky or the floor → "Point the camera at the road ahead") and
+  GPS speed (video mode, not moving → "Start driving to record"). Hints appear
+  as an animated, non-blocking amber pill on both capture screens.
+- **TfliteAdvisor (optional):** activates automatically when BOTH are present:
+  1. `react-native-fast-tflite` installed (declared as an *optional* peer
+     dependency — `npm install react-native-fast-tflite` + `npx expo prebuild`);
+  2. a model binary at `documentDirectory/models/road-detector.tflite`
+     (expected contract: input `[1,224,224,3]` uint8 RGB → output `[1,2]` =
+     `[roadProb, potholeProb]`). The repo intentionally does **not** ship the
+     binary; push it with `adb push` during development or download it on first
+     run. If the module or model is missing the factory falls back to the
+     heuristic silently. Wiring a camera frame processor is the single drop-in
+     point left (`AdvisorFrame.frameData`).
+
 ## Feature walkthrough
 
 - **Splash → routing** (`app/index.tsx`): animated logo + "Powered by
   Threemates Tech Ventures" + version, then routes by auth/profile state:
-  login → signup details → package offer → pending approval → tabs.
+  login → signup details → package offer → pending approval → tabs. First
+  approved login shows the **animated walkthrough** (`app/walkthrough.tsx`,
+  6 swipeable slides with parallax + animated dots; AsyncStorage flag
+  `walkthrough_seen_v1`; replayable from Profile). One-time **coach marks**
+  additionally point out the dashboard capture buttons, the photo annotator
+  flow and the video HUD.
 - **Signup** (`(auth)/signup-details`): name, photo, Student/Professional
   status (only an admin can later change status to Owner), UPI ID with
   validation, and camera/mic/location permission rationale.
-- **Package** (`(auth)/package`): the Starter package — 10 pothole videos on a
-  moving road OR 20 pothole photos → ₹1000, plus all collection rules.
-- **Dashboard**: stats, package progress bars, balance, big Capture Photo /
-  Record Video buttons, offline-upload banner.
+- **Package** (`(auth)/package` + Profile + dashboard): shows the user's
+  **live package from `/me` (`profile.package`)** — name, quotas, payout — with
+  `DEFAULT_PACKAGE` only as a fallback (and in the pre-login walkthrough).
+  When the package defines `nextPackageCode`, a "Next up: …" teaser appears.
+- **Dashboard**: stagger-in stat cards with count-up numbers (accepted includes
+  partially accepted), package progress bars (spring-animated), balance, streak
+  flame chip (≥2 days), **"Boost zones near you"** (GET `/campaigns/nearby`
+  with distance + compass direction + active window; hidden when empty), big
+  Capture Photo / Record Video buttons, offline-upload banner.
 - **Capture preflight** (`capture/preflight?mode=photo|video`): sequential
   checks — internet (offline allowed, sample is queued), location services +
   permission + first fix ≤ 15 m accuracy, mock-location rejection (hard fail),
-  camera + microphone permissions.
-- **Photo capture**: framing-guide overlay ("road only — avoid trees,
-  buildings, vehicles, people, animals, signboards"); GPS fix taken at shutter
-  time. Coordinates are **never drawn on the image and EXIF is never altered** —
-  location lives only in the metadata JSON.
+  camera + microphone permissions. If you are standing inside an active
+  campaign zone it shows "You are in <name> — <boost>× payout active".
+- **Photo capture**: framing-guide overlay plus the live guidance pill; GPS fix
+  taken at shutter time. Coordinates are **never drawn on the image and EXIF is
+  never altered** — location lives only in the metadata JSON.
 - **Photo annotator**: draw a scale-reference line across the visible road
   width (defaults per road type, e.g. asphalt 3.5 m), then tap-to-draw polygons
-  around each pothole (drag vertices to adjust, undo, close, multiple potholes),
-  choose label/severity/fill material and see live diameter/area/volume/kg
-  estimates from `shared/estimation.ts`.
+  around each pothole (spring vertex drop-in, drag with crosshair feedback,
+  undo, close, multiple potholes), choose label/severity/fill material and see
+  live diameter/area/volume/kg estimates from `shared/estimation.ts`.
 - **Video capture**: GPS track recorded every second (`GpsPoint` incl. true
-  speed + mocked flag). HUD: elapsed timer (red until 40 s), "capture ≥2
-  potholes" hint, and a speedometer. **Speed rule note:** the speedometer is
-  capped at 60 km/h and all copy says "Target: 60 km/h" / "keep it at 60" — the
-  UI never shows a number above 60. The actual accept/reject window is enforced
-  server-side from the true speeds stored in the GPS track. Stop is disabled
-  until 40 s.
+  speed + mocked flag). HUD: elapsed timer (crossfades red → green at 40 s),
+  "capture ≥2 potholes" hint, pulsing REC indicator and a smooth animated
+  speedometer. **Speed rule note:** there is **no minimum speed** — the rule is
+  simply "drive at up to 60 km/h". The speedometer is capped at 60 and the
+  label reads "Max: 60 km/h"; the UI never shows a number above 60. The only
+  warning is over-speed ("You're going too fast — stay at or under 60"), and
+  the actual enforcement window is applied **server-side** from the true speeds
+  stored in the GPS track. Stop is disabled until 40 s.
 - **Video annotator**: scrub/seek, "Mark pothole here" pauses the frame and
   opens the same polygon annotator; each mark stores `videoTimeSec` and shows
   its coordinate interpolated from the GPS track (`coordinateAtVideoTime`).
   Saving requires ≥ 2 marked potholes.
 - **Upload pipeline** (`src/upload/`): sqlite-backed queue
   (draft → init → chunked upload (1 MB chunks, per-chunk retry/backoff,
-  resumable) → complete → annotations → done). Typed server rejections
+  resumable) → complete → annotations → done). Size limits enforced locally
+  too: photos ≤ 25 MB, **videos ≤ 1 GB**. Typed server rejections
   (`DUPLICATE_*`, `SPEED_OUT_OF_RANGE`, …) mark the item **rejected** with a
   friendly message — rejected samples can never be re-uploaded; capture a new
-  one. Retries trigger on app foreground, connectivity change and manual retry.
-- **Samples / Earnings / Profile / Admin tabs**: state chips incl. rejection
-  reasons, full earnings ledger with settlement proof/UTR, editable profile
-  (name/UPI/photo), and an admin-only tab for approving users (full sample
-  review lives in the web dashboard).
+  one. Retries trigger on app foreground, connectivity change and manual retry;
+  queue events surface as snackbar toasts.
+- **Samples**: list with authenticated **thumbnails** (GET `/media/:id/thumb`
+  downloaded once with the Bearer token via expo-file-system into a local
+  cache), state chips incl. **Partially accepted** (teal — "some annotations
+  were adjusted by the reviewer — full credit granted") and rejection reasons
+  with an explicit no-re-upload note.
+- **Earnings**: summary cards + full ledger with settlement proof/UTR links.
+- **Ranks**: current + best streak card (flame, count-up), month/all-time
+  leaderboard toggle, top-50 list with gold/silver/bronze medals, your row
+  highlighted and pinned to the bottom when outside the top 50.
+- **Profile**: editable name/UPI/photo, live package details, replay
+  walkthrough, logout. **Admin tab** (admins only): approve/reject users,
+  pending-review count (full review lives in the web dashboard).
 
 ## Notes / caveats
 
@@ -121,3 +175,6 @@ plugin entry in `app.json` (`plugins`) — replace it in both places, then re-ru
   before release. `assets/logo.svg` mirrors the inline `src/components/Logo.tsx`.
 - Mock-location detection uses the OS `mocked` flag (Android); iOS has no such
   flag, so the server-side checks remain authoritative.
+- The optional TFLite path resolves its native module through a dynamic
+  (variable-specifier) `require` so Metro does not hard-fail when
+  `react-native-fast-tflite` is not installed.

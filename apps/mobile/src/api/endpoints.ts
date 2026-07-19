@@ -2,17 +2,25 @@
 import { api } from './client';
 import type {
   Annotation,
+  Campaign,
   CollectorStatus,
   DashboardStats,
+  LeaderboardEntry,
   LedgerEntry,
+  PackageInfo,
   Sample,
   User,
 } from '@/shared';
 
 // ---------- auth / profile ----------
 
-export function getMe(): Promise<User> {
-  return api<User>('/me');
+/** /me responses embed the user's current earnings package. */
+export interface MeResponse extends User {
+  package?: PackageInfo | null;
+}
+
+export function getMe(): Promise<MeResponse> {
+  return api<MeResponse>('/me');
 }
 
 export interface SignupCompleteBody {
@@ -23,8 +31,8 @@ export interface SignupCompleteBody {
   photoBase64: string | null;
 }
 
-export function signupComplete(body: SignupCompleteBody): Promise<User> {
-  return api<User>('/auth/signup-complete', { method: 'POST', body });
+export function signupComplete(body: SignupCompleteBody): Promise<MeResponse> {
+  return api<MeResponse>('/auth/signup-complete', { method: 'POST', body });
 }
 
 export interface PatchMeBody {
@@ -33,8 +41,36 @@ export interface PatchMeBody {
   photoBase64?: string;
 }
 
-export function patchMe(body: PatchMeBody): Promise<User> {
-  return api<User>('/me', { method: 'PATCH', body });
+export function patchMe(body: PatchMeBody): Promise<MeResponse> {
+  return api<MeResponse>('/me', { method: 'PATCH', body });
+}
+
+// ---------- campaigns / gamification / push ----------
+
+export function getNearbyCampaigns(lat: number, lng: number): Promise<Campaign[]> {
+  return api<Campaign[]>(`/campaigns/nearby?lat=${lat}&lng=${lng}`);
+}
+
+export type LeaderboardPeriod = 'month' | 'all';
+
+export function getLeaderboard(period: LeaderboardPeriod): Promise<LeaderboardEntry[]> {
+  return api<LeaderboardEntry[]>(`/leaderboard?period=${period}`);
+}
+
+export interface StreakInfo {
+  streakDays: number;
+  bestStreakDays: number;
+}
+
+export function getMyStreak(): Promise<StreakInfo> {
+  return api<StreakInfo>('/me/streak');
+}
+
+export function registerPushToken(token: string, platform: string): Promise<{ ok: true } | object> {
+  return api<{ ok: true } | object>('/me/push-token', {
+    method: 'POST',
+    body: { token, platform },
+  });
 }
 
 // ---------- dashboard / samples / earnings ----------

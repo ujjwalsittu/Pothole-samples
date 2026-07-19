@@ -18,6 +18,7 @@ import Animated, {
   useAnimatedScrollHandler,
   useAnimatedStyle,
   useSharedValue,
+  type SharedValue,
 } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
 import { Logo } from '@/components/Logo';
@@ -165,7 +166,7 @@ function SlideView({
   slide: Slide;
   index: number;
   width: number;
-  scrollX: Animated.SharedValue<number>;
+  scrollX: SharedValue<number>;
 }) {
   const range = [(index - 1) * width, index * width, (index + 1) * width];
 
@@ -210,7 +211,7 @@ function Dot({
 }: {
   index: number;
   width: number;
-  scrollX: Animated.SharedValue<number>;
+  scrollX: SharedValue<number>;
 }) {
   const range = [(index - 1) * width, index * width, (index + 1) * width];
   const style = useAnimatedStyle(() => ({

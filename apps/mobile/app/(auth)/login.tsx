@@ -6,6 +6,7 @@ import { Logo } from '@/components/Logo';
 import { Button } from '@/components/Button';
 import { BrandFooter } from '@/components/BrandFooter';
 import { useAuth } from '@/auth/AuthContext';
+import { hasSeenWalkthrough } from '@/onboarding/flags';
 import { colors, font, spacing } from '@/theme';
 
 export default function LoginScreen() {
@@ -18,7 +19,12 @@ export default function LoginScreen() {
     if (status === 'noProfile') router.replace('/(auth)/signup-details');
     else if (status === 'pending' || status === 'rejected' || status === 'suspended')
       router.replace('/(auth)/pending');
-    else if (status === 'approved') router.replace('/(tabs)/dashboard');
+    else if (status === 'approved') {
+      // First-time users see the walkthrough before the tabs.
+      void hasSeenWalkthrough().then((seen) => {
+        router.replace(seen ? '/(tabs)/dashboard' : '/walkthrough');
+      });
+    }
   }, [status, router]);
 
   const handle = async (kind: 'google' | 'universal') => {

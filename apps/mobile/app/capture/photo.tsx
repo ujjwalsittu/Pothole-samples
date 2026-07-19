@@ -10,6 +10,8 @@ import Animated, {
   withSpring,
 } from 'react-native-reanimated';
 import { GuidelinesOverlay } from '@/components/GuidelinesOverlay';
+import { GuidanceBanner } from '@/components/GuidanceBanner';
+import { useRoadGuidance } from '@/detection/useRoadGuidance';
 import { setCapture } from '@/capture/session';
 import { colors, font, radius, spacing } from '@/theme';
 
@@ -28,6 +30,9 @@ export default function PhotoCaptureScreen() {
   const shutterStyle = useAnimatedStyle(() => ({
     transform: [{ scale: shutterScale.value }],
   }));
+
+  // Non-blocking framing guidance (device pitch heuristic / optional TFLite).
+  const { hint } = useRoadGuidance({ mode: 'photo', speedMps: null, recording: false });
 
   const shoot = async () => {
     if (busy || !cameraRef.current) return;
@@ -70,6 +75,10 @@ export default function PhotoCaptureScreen() {
     <View style={styles.container}>
       <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing="back" />
       <GuidelinesOverlay />
+
+      <View style={styles.guidanceWrap} pointerEvents="none">
+        <GuidanceBanner hint={hint} />
+      </View>
 
       {error ? (
         <View style={styles.errorBanner}>
@@ -145,4 +154,11 @@ const styles = StyleSheet.create({
     padding: spacing.sm,
   },
   errorText: { color: '#FCA5A5', fontSize: font.small, textAlign: 'center' },
+  guidanceWrap: {
+    position: 'absolute',
+    top: 128,
+    left: spacing.md,
+    right: spacing.md,
+    alignItems: 'center',
+  },
 });

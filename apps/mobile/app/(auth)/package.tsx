@@ -3,12 +3,13 @@ import { StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Screen } from '@/components/Screen';
 import { Button } from '@/components/Button';
+import { useAuth } from '@/auth/AuthContext';
 import { colors, font, radius, spacing } from '@/theme';
 import { DEFAULT_PACKAGE, SPEED, VIDEO_RULES } from '@/shared';
 
 const RULES: string[] = [
   `Videos must be at least ${VIDEO_RULES.MIN_DURATION_SECONDS} seconds long and contain at least ${VIDEO_RULES.MIN_POTHOLES} potholes.`,
-  `In record mode, keep your speed at about ${SPEED.DISPLAYED_CAP_KMPH} km/h on a moving road.`,
+  `In record mode, drive at up to ${SPEED.DISPLAYED_CAP_KMPH} km/h on a moving road — there is no minimum speed.`,
   'No duplicates and no pre-submitted samples — every sample is checked against everyone’s submissions, not just yours.',
   'Focus on the road only. Avoid trees, buildings, vehicles, people, animals and signboards in the frame.',
   'Location must be precise and genuine. Mock/simulated GPS is always rejected.',
@@ -17,16 +18,20 @@ const RULES: string[] = [
 
 export default function PackageScreen() {
   const router = useRouter();
+  const { profile } = useAuth();
+  // The signup-complete response already carries the assigned package;
+  // DEFAULT_PACKAGE is only the fallback until /me returns one.
+  const pkg = profile?.package ?? DEFAULT_PACKAGE;
   return (
     <Screen>
       <Text style={styles.title}>Your package</Text>
       <View style={styles.card}>
-        <Text style={styles.pkgName}>{DEFAULT_PACKAGE.name}</Text>
+        <Text style={styles.pkgName}>{pkg.name}</Text>
         <Text style={styles.pkgHeadline}>
-          Complete {DEFAULT_PACKAGE.videoQuota} pothole videos on a moving road{'\n'}
-          <Text style={styles.or}>OR</Text> {DEFAULT_PACKAGE.photoQuota} pothole photos
+          Complete {pkg.videoQuota} pothole videos on a moving road{'\n'}
+          <Text style={styles.or}>OR</Text> {pkg.photoQuota} pothole photos
         </Text>
-        <Text style={styles.payout}>₹{DEFAULT_PACKAGE.payoutInr}</Text>
+        <Text style={styles.payout}>₹{pkg.payoutInr}</Text>
         <Text style={styles.payoutNote}>paid to your UPI ID once the quota is accepted</Text>
       </View>
 

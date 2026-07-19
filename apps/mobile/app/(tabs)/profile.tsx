@@ -146,10 +146,20 @@ export default function ProfileScreen() {
 
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Package</Text>
-        <Text style={styles.pkgText}>
-          {DEFAULT_PACKAGE.name}: {DEFAULT_PACKAGE.videoQuota} videos OR {DEFAULT_PACKAGE.photoQuota}{' '}
-          photos {'→'} ₹{DEFAULT_PACKAGE.payoutInr}
-        </Text>
+        {(() => {
+          // Live package from /me; DEFAULT_PACKAGE only as pre-migration fallback.
+          const pkg = profile?.package ?? DEFAULT_PACKAGE;
+          return (
+            <>
+              <Text style={styles.pkgText}>
+                {pkg.name}: {pkg.videoQuota} videos OR {pkg.photoQuota} photos {'→'} ₹{pkg.payoutInr}
+              </Text>
+              {profile?.package?.nextPackageCode ? (
+                <Text style={styles.pkgNext}>Next up: {profile.package.nextPackageCode}</Text>
+              ) : null}
+            </>
+          );
+        })()}
       </View>
 
       <View style={styles.card}>
@@ -238,5 +248,6 @@ const styles = StyleSheet.create({
   editBtn: { flex: 1 },
   error: { color: colors.danger, fontSize: font.small, marginTop: spacing.sm },
   pkgText: { color: colors.textDim, fontSize: font.small, lineHeight: 20 },
+  pkgNext: { color: colors.textFaint, fontSize: font.tiny, marginTop: spacing.xs },
   logout: { marginTop: spacing.sm },
 });

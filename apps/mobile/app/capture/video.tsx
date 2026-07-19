@@ -13,6 +13,8 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Speedometer } from '@/components/Speedometer';
 import { CoachMark, useCoachMark } from '@/components/CoachMark';
+import { GuidanceBanner } from '@/components/GuidanceBanner';
+import { useRoadGuidance } from '@/detection/useRoadGuidance';
 import { setCapture } from '@/capture/session';
 import { colors, font, radius, spacing } from '@/theme';
 import { SPEED, VIDEO_RULES, type GpsPoint } from '@/shared';
@@ -41,6 +43,15 @@ export default function VideoCaptureScreen() {
 
   const minReached = elapsedSec >= VIDEO_RULES.MIN_DURATION_SECONDS;
   const tooFast = recording && speedKmph > SPEED.MAX_KMPH;
+
+  // Non-blocking framing/motion guidance (pitch heuristic / optional TFLite).
+  // Suppressed while the coach mark or the over-speed warning is visible.
+  const { hint } = useRoadGuidance({
+    mode: 'video',
+    speedMps: speedKmph / 3.6,
+    recording,
+    enabled: !coach.visible,
+  });
 
   // Timer pill crossfades red -> green when the 40 s minimum is reached.
   const minSv = useSharedValue(0);
@@ -180,6 +191,12 @@ export default function VideoCaptureScreen() {
         <Speedometer actualKmph={speedKmph} />
       </View>
 
+      {!tooFast ? (
+        <View style={styles.guidanceWrap} pointerEvents="none">
+          <GuidanceBanner hint={hint} />
+        </View>
+      ) : null}
+
       {tooFast ? (
         <View style={[styles.warnBanner, styles.warnFast]}>
           <Text style={styles.warnText}>You{'’'}re going too fast — stay at or under 60.</Text>
@@ -270,6 +287,13 @@ const styles = StyleSheet.create({
   },
   hintText: { color: colors.primary, fontSize: font.small, fontWeight: '700' },
   speedoWrap: { position: 'absolute', top: 120, right: spacing.md },
+  guidanceWrap: {
+    position: 'absolute',
+    bottom: 170,
+    left: spacing.md,
+    right: spacing.md,
+    alignItems: 'center',
+  },
   warnBanner: {
     position: 'absolute',
     bottom: 170,

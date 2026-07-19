@@ -177,8 +177,9 @@ export default function AnnotatePhotoScreen() {
       });
       clearCapture();
       router.replace('/capture/queue');
-    } catch {
-      setError('Could not save the sample locally. Try again.');
+    } catch (e) {
+      // Surface specific messages (e.g. media size limit) from createDraft.
+      setError(e instanceof Error && e.message ? e.message : 'Could not save the sample locally. Try again.');
     } finally {
       setSaving(false);
     }

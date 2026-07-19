@@ -101,6 +101,36 @@ export const FILL_MATERIALS = {
   'gravel-aggregate': 1600,
 } as const;
 
+/** Dataset export split rules — split by collector+geo bucket, never randomly. */
+export const DATASET_SPLIT = {
+  TRAIN: 0.8,
+  VAL: 0.1,
+  TEST: 0.1,
+  /** Geohash precision used to bucket nearby scenes together (~150 m cells). */
+  GEO_PRECISION: 7,
+} as const;
+
+/** Leaderboard / streak rules. */
+export const GAMIFICATION = {
+  /** A streak day = at least one accepted (or partially accepted) sample that day. */
+  STREAK_MIN_ACCEPTED_PER_DAY: 1,
+  LEADERBOARD_LIMIT: 50,
+} as const;
+
+/** Campaign (target-zone) defaults. */
+export const CAMPAIGNS = {
+  /** Default payout multiplier for samples captured inside an active zone. */
+  DEFAULT_BOOST: 1.5,
+  /** Radius used for "campaigns near me" lookups, meters. */
+  NEARBY_RADIUS_M: 10_000,
+} as const;
+
+/** Settlements at/above this amount need a second admin's confirmation (₹). */
+export const SETTLEMENT_CONFIRM_THRESHOLD_INR = 5000;
+
+/** Road-quality index aggregation cell size (geohash precision, ~150 m). */
+export const ROAD_QUALITY_GEO_PRECISION = 7;
+
 export const UPLOAD = {
   MAX_PHOTO_BYTES: 25 * 1024 * 1024,
   MAX_VIDEO_BYTES: 1024 * 1024 * 1024, // 1 GB

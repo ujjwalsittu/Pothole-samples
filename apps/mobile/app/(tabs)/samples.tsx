@@ -1,14 +1,17 @@
-import React, { useCallback, useState } from 'react';
-import { FlatList, RefreshControl, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useEffect, useState } from 'react';
+import { FlatList, Image, RefreshControl, StyleSheet, Text, View } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatChip, sampleStateChip } from '@/components/StatChip';
+import { SkeletonCard } from '@/components/Skeleton';
+import { TabIcon } from '@/components/TabIcon';
 import { getMySamples } from '@/api/endpoints';
+import { getThumbUri } from '@/media/thumbs';
 import { colors, font, radius, spacing } from '@/theme';
 import type { Sample } from '@/shared';
 
 export default function SamplesScreen() {
-  const [samples, setSamples] = useState<Sample[]>([]);
+  const [samples, setSamples] = useState<Sample[] | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -37,20 +40,51 @@ export default function SamplesScreen() {
     <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
       <Text style={styles.title}>My samples</Text>
       {error ? <Text style={styles.error}>{error}</Text> : null}
-      <FlatList
-        data={samples}
-        keyExtractor={(s) => s.id}
-        contentContainerStyle={styles.list}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={() => void onRefresh()} tintColor={colors.primary} />
-        }
-        ListEmptyComponent={
-          <Text style={styles.empty}>No samples yet. Capture your first pothole from the dashboard.</Text>
-        }
-        renderItem={({ item }) => <SampleRow sample={item} />}
-      />
+      {samples === null ? (
+        <View style={styles.list}>
+          <SkeletonCard />
+          <SkeletonCard />
+          <SkeletonCard />
+        </View>
+      ) : (
+        <FlatList
+          data={samples}
+          keyExtractor={(s) => s.id}
+          contentContainerStyle={styles.list}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={() => void onRefresh()} tintColor={colors.primary} />
+          }
+          ListEmptyComponent={
+            <Text style={styles.empty}>No samples yet. Capture your first pothole from the dashboard.</Text>
+          }
+          renderItem={({ item }) => <SampleRow sample={item} />}
+        />
+      )}
     </SafeAreaView>
   );
+}
+
+/** Authed thumbnail with local cache; falls back to the samples glyph. */
+function SampleThumb({ sampleId }: { sampleId: string }) {
+  const [uri, setUri] = useState<string | null>(null);
+  useEffect(() => {
+    let mounted = true;
+    void getThumbUri(sampleId).then((u) => {
+      if (mounted) setUri(u);
+    });
+    return () => {
+      mounted = false;
+    };
+  }, [sampleId]);
+
+  if (!uri) {
+    return (
+      <View style={[styles.thumb, styles.thumbFallback]}>
+        <TabIcon name="samples" color={colors.textFaint} size={22} />
+      </View>
+    );
+  }
+  return <Image source={{ uri }} style={styles.thumb} />;
 }
 
 function SampleRow({ sample }: { sample: Sample }) {
@@ -58,19 +92,25 @@ function SampleRow({ sample }: { sample: Sample }) {
   const isRejected = sample.state === 'rejected' || sample.state === 'auto_rejected';
   return (
     <View style={styles.row}>
-      <View style={styles.rowHeader}>
-        <Text style={styles.rowTitle}>
-          {sample.mediaType === 'photo' ? 'Photo' : 'Video'}
-          {sample.mediaType === 'video' && sample.durationSec != null
-            ? ` · ${Math.round(sample.durationSec)}s`
-            : ''}
-          {` · ${sample.potholeCount} pothole${sample.potholeCount === 1 ? '' : 's'}`}
-        </Text>
-        <StatChip label={chip.label} tone={chip.tone} />
+      <View style={styles.rowTop}>
+        <SampleThumb sampleId={sample.id} />
+        <View style={styles.rowBody}>
+          <View style={styles.rowHeader}>
+            <Text style={styles.rowTitle}>
+              {sample.mediaType === 'photo' ? 'Photo' : 'Video'}
+              {sample.mediaType === 'video' && sample.durationSec != null
+                ? ` · ${Math.round(sample.durationSec)}s`
+                : ''}
+              {` · ${sample.potholeCount} pothole${sample.potholeCount === 1 ? '' : 's'}`}
+            </Text>
+            <StatChip label={chip.label} tone={chip.tone} />
+          </View>
+          <Text style={styles.rowMeta}>
+            {new Date(sample.capturedAt).toLocaleString()} · {sample.lat.toFixed(5)},{' '}
+            {sample.lng.toFixed(5)}
+          </Text>
+        </View>
       </View>
-      <Text style={styles.rowMeta}>
-        {new Date(sample.capturedAt).toLocaleString()} · {sample.lat.toFixed(5)}, {sample.lng.toFixed(5)}
-      </Text>
       {sample.state === 'partially_accepted' ? (
         <View style={styles.partialBox}>
           <Text style={styles.partialText}>
@@ -112,6 +152,21 @@ const styles = StyleSheet.create({
     padding: spacing.md,
     marginBottom: spacing.sm,
   },
+  rowTop: { flexDirection: 'row', alignItems: 'center' },
+  thumb: {
+    width: 52,
+    height: 52,
+    borderRadius: radius.sm,
+    marginRight: spacing.sm + 2,
+    backgroundColor: colors.cardAlt,
+  },
+  thumbFallback: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  rowBody: { flex: 1 },
   rowHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   rowTitle: { color: colors.text, fontSize: font.body, fontWeight: '600', flex: 1, marginRight: spacing.sm },
   rowMeta: { color: colors.textFaint, fontSize: font.tiny, marginTop: spacing.xs },

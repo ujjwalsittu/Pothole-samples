@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatChip, queueStateChip } from '@/components/StatChip';
@@ -12,12 +12,20 @@ import { colors, font, radius, spacing } from '@/theme';
 export default function QueueScreen() {
   const router = useRouter();
   const [items, setItems] = useState<QueueItem[]>(() => uploadManager.getQueue());
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
     const unsub = uploadManager.subscribe(() => setItems(uploadManager.getQueue()));
     void uploadManager.kick();
     return unsub;
   }, []);
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await uploadManager.kick();
+    setItems(uploadManager.getQueue());
+    setRefreshing(false);
+  };
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
@@ -31,6 +39,9 @@ export default function QueueScreen() {
         data={[...items].reverse()}
         keyExtractor={(i) => i.id}
         contentContainerStyle={styles.list}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={() => void onRefresh()} tintColor={colors.primary} />
+        }
         ListEmptyComponent={<Text style={styles.empty}>Nothing in the queue.</Text>}
         renderItem={({ item }) => <QueueRow item={item} />}
       />

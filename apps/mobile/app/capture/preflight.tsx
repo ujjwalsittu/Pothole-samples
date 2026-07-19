@@ -7,6 +7,8 @@ import { useCameraPermissions, useMicrophonePermissions } from 'expo-camera';
 import { Screen } from '@/components/Screen';
 import { Button } from '@/components/Button';
 import { setOfflineMode } from '@/capture/session';
+import { getNearbyCampaigns } from '@/api/endpoints';
+import { withGeo, type CampaignWithGeo } from '@/utils/campaigns';
 import { colors, font, radius, spacing } from '@/theme';
 import { GPS_RULES } from '@/shared';
 
@@ -34,6 +36,7 @@ export default function PreflightScreen() {
   const [checks, setChecks] = useState<Check[]>(INITIAL);
   const [running, setRunning] = useState(false);
   const [mockBlocked, setMockBlocked] = useState(false);
+  const [activeZone, setActiveZone] = useState<CampaignWithGeo | null>(null);
 
   const [, requestCameraPerm] = useCameraPermissions();
   const [, requestMicPerm] = useMicrophonePermissions();
@@ -45,6 +48,7 @@ export default function PreflightScreen() {
   const runChecks = useCallback(async () => {
     setRunning(true);
     setMockBlocked(false);
+    setActiveZone(null);
     setChecks(INITIAL.map((c) => ({ ...c })));
 
     // 1. Internet — offline is allowed, but flagged.
@@ -109,6 +113,17 @@ export default function PreflightScreen() {
     }
     set('mock', 'pass', 'Genuine GPS fix');
 
+    // Boost-zone lookup (best-effort, online only): are we inside a campaign?
+    if (!offline) {
+      const { latitude, longitude } = fix.coords;
+      void getNearbyCampaigns(latitude, longitude)
+        .then((list) => {
+          const geo = withGeo(list, latitude, longitude);
+          setActiveZone(geo.find((c) => c.inside) ?? null);
+        })
+        .catch(() => setActiveZone(null));
+    }
+
     // 4. Camera + microphone permissions.
     set('camera', 'running');
     const cam = await requestCameraPerm();
@@ -161,6 +176,14 @@ export default function PreflightScreen() {
         <View style={styles.offlineBanner}>
           <Text style={styles.offlineText}>
             OFFLINE MODE — your sample will be queued and uploaded later.
+          </Text>
+        </View>
+      ) : null}
+
+      {activeZone ? (
+        <View style={styles.zoneBanner}>
+          <Text style={styles.zoneText}>
+            You are in {activeZone.name} — {activeZone.boost}× payout active
           </Text>
         </View>
       ) : null}
@@ -226,6 +249,13 @@ const styles = StyleSheet.create({
     marginTop: spacing.md,
   },
   offlineText: { color: '#FCD34D', fontSize: font.small, fontWeight: '700', textAlign: 'center' },
+  zoneBanner: {
+    backgroundColor: '#134E4A',
+    borderRadius: radius.md,
+    padding: spacing.md,
+    marginTop: spacing.md,
+  },
+  zoneText: { color: '#5EEAD4', fontSize: font.small, fontWeight: '700', textAlign: 'center' },
   list: {
     backgroundColor: colors.card,
     borderRadius: radius.md,

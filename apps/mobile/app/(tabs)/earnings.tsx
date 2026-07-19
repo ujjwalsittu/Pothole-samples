@@ -2,6 +2,7 @@ import React, { useCallback, useState } from 'react';
 import { FlatList, Linking, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { SkeletonCard } from '@/components/Skeleton';
 import { getLedger, type LedgerResponse, type LedgerRow } from '@/api/endpoints';
 import { colors, font, radius, spacing } from '@/theme';
 
@@ -42,18 +43,26 @@ export default function EarningsScreen() {
         <SummaryCard label="Balance" value={ledger?.balanceInr ?? 0} color={colors.primary} />
       </View>
 
-      <FlatList
-        data={ledger?.entries ?? []}
-        keyExtractor={(e) => e.id}
-        contentContainerStyle={styles.list}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={() => void onRefresh()} tintColor={colors.primary} />
-        }
-        ListEmptyComponent={
-          <Text style={styles.empty}>No ledger entries yet. Accepted samples appear here.</Text>
-        }
-        renderItem={({ item }) => <LedgerRowView row={item} />}
-      />
+      {ledger === null ? (
+        <View style={styles.list}>
+          <SkeletonCard />
+          <SkeletonCard />
+          <SkeletonCard />
+        </View>
+      ) : (
+        <FlatList
+          data={ledger.entries}
+          keyExtractor={(e) => e.id}
+          contentContainerStyle={styles.list}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={() => void onRefresh()} tintColor={colors.primary} />
+          }
+          ListEmptyComponent={
+            <Text style={styles.empty}>No ledger entries yet. Accepted samples appear here.</Text>
+          }
+          renderItem={({ item }) => <LedgerRowView row={item} />}
+        />
+      )}
     </SafeAreaView>
   );
 }

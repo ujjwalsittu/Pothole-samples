@@ -1,7 +1,7 @@
 import React from 'react';
 import Svg, { Circle, Path, Rect } from 'react-native-svg';
 
-export type TabIconName = 'dashboard' | 'samples' | 'earnings' | 'profile' | 'admin';
+export type TabIconName = 'dashboard' | 'samples' | 'earnings' | 'ranks' | 'profile' | 'admin';
 
 interface Props {
   name: TabIconName;
@@ -35,6 +35,15 @@ export function TabIcon({ name, color, size = 24 }: Props) {
         <Svg width={size} height={size} viewBox="0 0 24 24">
           {/* rupee glyph */}
           <Path d="M7 4 H17 M7 8 H17 M7 4 C13 4 13 11 7 11 L15 20" {...s} strokeLinejoin="round" />
+        </Svg>
+      );
+    case 'ranks':
+      return (
+        <Svg width={size} height={size} viewBox="0 0 24 24">
+          {/* trophy */}
+          <Path d="M8 4 H16 V10 C16 13 14 15 12 15 C10 15 8 13 8 10 Z" {...s} strokeLinejoin="round" />
+          <Path d="M8 6 H4.5 C4.5 10 6.5 11.5 8.5 11.5 M16 6 H19.5 C19.5 10 17.5 11.5 15.5 11.5" {...s} />
+          <Path d="M12 15 V18 M9 21 H15 M10 18 H14" {...s} />
         </Svg>
       );
     case 'profile':

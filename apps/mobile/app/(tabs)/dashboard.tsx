@@ -2,18 +2,31 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import * as Location from 'expo-location';
+import Animated, { FadeInDown } from 'react-native-reanimated';
 import { ProgressBar } from '@/components/ProgressBar';
 import { CoachMark, useCoachMark } from '@/components/CoachMark';
-import { getDashboardStats } from '@/api/endpoints';
+import { Skeleton } from '@/components/Skeleton';
+import { FlameIcon } from './ranks';
+import {
+  getDashboardStats,
+  getMyStreak,
+  getNearbyCampaigns,
+  type StreakInfo,
+} from '@/api/endpoints';
 import { useAuth } from '@/auth/AuthContext';
+import { useCountUp } from '@/hooks/useCountUp';
 import { uploadManager } from '@/upload/manager';
+import { activeWindow, formatDistance, withGeo, type CampaignWithGeo } from '@/utils/campaigns';
 import { colors, font, radius, spacing } from '@/theme';
-import type { DashboardStats } from '@/shared';
+import { DEFAULT_PACKAGE, type DashboardStats } from '@/shared';
 
 export default function DashboardScreen() {
   const router = useRouter();
   const { profile } = useAuth();
   const [stats, setStats] = useState<DashboardStats | null>(null);
+  const [streak, setStreak] = useState<StreakInfo | null>(null);
+  const [campaigns, setCampaigns] = useState<CampaignWithGeo[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [pendingUploads, setPendingUploads] = useState(0);
   const coach = useCoachMark('coach_dashboard_v1');
@@ -24,6 +37,19 @@ export default function DashboardScreen() {
     } catch {
       // keep last known stats; dashboard is not critical-path
     }
+    void getMyStreak()
+      .then(setStreak)
+      .catch(() => undefined);
+    // Campaigns need a location; stay silent without permission or network.
+    void (async () => {
+      const perm = await Location.getForegroundPermissionsAsync();
+      if (!perm.granted) return;
+      const fix =
+        (await Location.getLastKnownPositionAsync()) ??
+        (await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }));
+      const list = await getNearbyCampaigns(fix.coords.latitude, fix.coords.longitude);
+      setCampaigns(withGeo(list, fix.coords.latitude, fix.coords.longitude));
+    })().catch(() => undefined);
   }, []);
 
   useFocusEffect(
@@ -44,6 +70,9 @@ export default function DashboardScreen() {
   };
 
   const p = stats?.packageProgress;
+  const pkg = profile?.package ?? null;
+  const pkgName = pkg?.name ?? DEFAULT_PACKAGE.name;
+  const streakDays = streak?.streakDays ?? 0;
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
@@ -53,7 +82,15 @@ export default function DashboardScreen() {
           <RefreshControl refreshing={refreshing} onRefresh={() => void onRefresh()} tintColor={colors.primary} />
         }
       >
-        <Text style={styles.hello}>Hi {profile?.fullName?.split(' ')[0] ?? 'there'}</Text>
+        <View style={styles.helloRow}>
+          <Text style={styles.hello}>Hi {profile?.fullName?.split(' ')[0] ?? 'there'}</Text>
+          {streakDays >= 2 ? (
+            <Animated.View entering={FadeInDown.springify()} style={styles.streakChip}>
+              <FlameIcon size={16} />
+              <Text style={styles.streakChipText}>{streakDays}d</Text>
+            </Animated.View>
+          ) : null}
+        </View>
         <Text style={styles.sub}>Let{'’'}s map some potholes today.</Text>
 
         {pendingUploads > 0 ? (
@@ -65,16 +102,28 @@ export default function DashboardScreen() {
         ) : null}
 
         {/* stat grid — accepted includes partially accepted (both earn credit) */}
-        <View style={styles.grid}>
-          <StatCard label="Total" value={stats?.totalSamples ?? '—'} />
-          <StatCard
-            label="Accepted"
-            value={stats ? stats.accepted + stats.partiallyAccepted : '—'}
-            color={colors.success}
-          />
-          <StatCard label="Pending" value={stats?.pending ?? '—'} color={colors.warning} />
-          <StatCard label="Rejected" value={stats?.rejected ?? '—'} color={colors.danger} />
-        </View>
+        {stats === null ? (
+          <View style={styles.grid}>
+            {[0, 1, 2, 3].map((i) => (
+              <View key={i} style={styles.statCard}>
+                <Skeleton width={40} height={24} />
+                <Skeleton width={52} height={10} style={styles.statSkeletonLabel} />
+              </View>
+            ))}
+          </View>
+        ) : (
+          <View style={styles.grid}>
+            <StatCard index={0} label="Total" value={stats.totalSamples} />
+            <StatCard
+              index={1}
+              label="Accepted"
+              value={stats.accepted + stats.partiallyAccepted}
+              color={colors.success}
+            />
+            <StatCard index={2} label="Pending" value={stats.pending} color={colors.warning} />
+            <StatCard index={3} label="Rejected" value={stats.rejected} color={colors.danger} />
+          </View>
+        )}
         {stats && stats.partiallyAccepted > 0 ? (
           <Text style={styles.partialNote}>
             includes {stats.partiallyAccepted} partially accepted (full credit)
@@ -83,7 +132,7 @@ export default function DashboardScreen() {
 
         {/* package progress */}
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>Package progress</Text>
+          <Text style={styles.cardTitle}>{pkgName} progress</Text>
           <ProgressBar
             label="Videos"
             progress={p ? p.videosDone / Math.max(1, p.videoQuota) : 0}
@@ -99,7 +148,35 @@ export default function DashboardScreen() {
             <Text style={styles.balanceLabel}>Balance</Text>
             <Text style={styles.balanceValue}>₹{stats?.balanceInr ?? 0}</Text>
           </View>
+          {pkg?.nextPackageCode ? (
+            <Text style={styles.nextPkg}>Next up: {pkg.nextPackageCode}</Text>
+          ) : null}
         </View>
+
+        {/* campaigns near me */}
+        {campaigns.length > 0 ? (
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Boost zones near you</Text>
+            {campaigns.map((c, i) => (
+              <Animated.View
+                key={c.id}
+                entering={FadeInDown.delay(i * 70).springify()}
+                style={styles.zoneRow}
+              >
+                <View style={styles.zoneInfo}>
+                  <Text style={styles.zoneName}>{c.name}</Text>
+                  <Text style={styles.zoneMeta}>
+                    {c.inside ? 'You are inside this zone' : `${formatDistance(c.distanceM)} ${c.direction}`}
+                    {activeWindow(c) ? ` · ${activeWindow(c)}` : ''}
+                  </Text>
+                </View>
+                <View style={styles.zoneBoost}>
+                  <Text style={styles.zoneBoostText}>{c.boost}× payout</Text>
+                </View>
+              </Animated.View>
+            ))}
+          </View>
+        ) : null}
 
         {/* capture buttons */}
         <View ref={coach.targetRef} onLayout={coach.onTargetLayout} collapsable={false}>
@@ -129,19 +206,41 @@ export default function DashboardScreen() {
   );
 }
 
-function StatCard({ label, value, color = colors.text }: { label: string; value: number | string; color?: string }) {
+function StatCard({
+  index,
+  label,
+  value,
+  color = colors.text,
+}: {
+  index: number;
+  label: string;
+  value: number;
+  color?: string;
+}) {
+  const displayed = useCountUp(value);
   return (
-    <View style={styles.statCard}>
-      <Text style={[styles.statValue, { color }]}>{value}</Text>
+    <Animated.View entering={FadeInDown.delay(index * 80).springify()} style={styles.statCard}>
+      <Text style={[styles.statValue, { color }]}>{displayed}</Text>
       <Text style={styles.statLabel}>{label}</Text>
-    </View>
+    </Animated.View>
   );
 }
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
   content: { padding: spacing.md },
+  helloRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   hello: { color: colors.text, fontSize: font.h1, fontWeight: '700' },
+  streakChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#78350F',
+    borderRadius: radius.pill,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 3,
+  },
+  streakChipText: { color: colors.primary, fontSize: font.small, fontWeight: '800' },
   sub: { color: colors.textDim, fontSize: font.body, marginTop: 2, marginBottom: spacing.md },
   queueBanner: {
     backgroundColor: '#78350F',
@@ -163,6 +262,7 @@ const styles = StyleSheet.create({
   },
   statValue: { fontSize: font.h2, fontWeight: '800' },
   statLabel: { color: colors.textDim, fontSize: font.tiny, marginTop: 2 },
+  statSkeletonLabel: { marginTop: spacing.sm },
   card: {
     backgroundColor: colors.card,
     borderRadius: radius.md,
@@ -183,6 +283,24 @@ const styles = StyleSheet.create({
   },
   balanceLabel: { color: colors.textDim, fontSize: font.body },
   balanceValue: { color: colors.primary, fontSize: font.h2, fontWeight: '800' },
+  nextPkg: { color: colors.textFaint, fontSize: font.tiny, marginTop: spacing.sm },
+  zoneRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  zoneInfo: { flex: 1, marginRight: spacing.sm },
+  zoneName: { color: colors.text, fontSize: font.body, fontWeight: '600' },
+  zoneMeta: { color: colors.textFaint, fontSize: font.tiny, marginTop: 2 },
+  zoneBoost: {
+    backgroundColor: '#134E4A',
+    borderRadius: radius.pill,
+    paddingHorizontal: spacing.sm + 2,
+    paddingVertical: 4,
+  },
+  zoneBoostText: { color: '#5EEAD4', fontSize: font.tiny, fontWeight: '800' },
   captureBtn: {
     borderRadius: radius.lg,
     padding: spacing.lg,

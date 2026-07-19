@@ -14,8 +14,7 @@ import React, {
 import { Auth0Provider, useAuth0 } from 'react-native-auth0';
 import { CONFIG } from '@/config';
 import { ApiError, getStoredToken, setStoredToken } from '@/api/client';
-import { getMe } from '@/api/endpoints';
-import type { User } from '@/shared';
+import { getMe, type MeResponse } from '@/api/endpoints';
 
 /** Where the app should send the user, derived from token + profile state. */
 export type AuthStatus =
@@ -29,13 +28,13 @@ export type AuthStatus =
 
 export interface AuthState {
   status: AuthStatus;
-  profile: User | null;
+  profile: MeResponse | null;
   /** Last auth/profile error message, for display on login screen. */
   error: string | null;
   loginWithGoogle: () => Promise<void>;
   loginWithUniversal: () => Promise<void>;
   refreshProfile: () => Promise<AuthStatus>;
-  setProfile: (u: User) => void;
+  setProfile: (u: MeResponse) => void;
   logout: () => Promise<void>;
 }
 
@@ -47,7 +46,7 @@ export function useAuth(): AuthState {
   return ctx;
 }
 
-function statusFromProfile(profile: User): AuthStatus {
+function statusFromProfile(profile: MeResponse): AuthStatus {
   switch (profile.accountState) {
     case 'approved':
       return 'approved';
@@ -65,7 +64,7 @@ function statusFromProfile(profile: User): AuthStatus {
 function InnerAuthProvider({ children }: { children: React.ReactNode }) {
   const { authorize, clearSession } = useAuth0();
   const [status, setStatus] = useState<AuthStatus>('loading');
-  const [profile, setProfileState] = useState<User | null>(null);
+  const [profile, setProfileState] = useState<MeResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refreshProfile = useCallback(async (): Promise<AuthStatus> => {
@@ -147,7 +146,7 @@ function InnerAuthProvider({ children }: { children: React.ReactNode }) {
     setStatus('signedOut');
   }, [clearSession]);
 
-  const setProfile = useCallback((u: User) => {
+  const setProfile = useCallback((u: MeResponse) => {
     setProfileState(u);
     setStatus(statusFromProfile(u));
   }, []);

@@ -10,6 +10,9 @@ export default function CaptureLayout() {
         contentStyle: { backgroundColor: colors.bg },
         animation: 'slide_from_right',
       }}
-    />
+    >
+      {/* The upload queue slides up like a sheet. */}
+      <Stack.Screen name="queue" options={{ animation: 'slide_from_bottom' }} />
+    </Stack>
   );
 }

@@ -6,6 +6,7 @@ import { Button } from '@/components/Button';
 import { Logo } from '@/components/Logo';
 import { BrandFooter } from '@/components/BrandFooter';
 import { useAuth } from '@/auth/AuthContext';
+import { hasSeenWalkthrough } from '@/onboarding/flags';
 import { colors, font, radius, spacing } from '@/theme';
 
 export default function PendingScreen() {
@@ -20,7 +21,10 @@ export default function PendingScreen() {
     setChecking(true);
     try {
       const s = await refreshProfile();
-      if (s === 'approved') router.replace('/(tabs)/dashboard');
+      if (s === 'approved') {
+        const seen = await hasSeenWalkthrough();
+        router.replace(seen ? '/(tabs)/dashboard' : '/walkthrough');
+      }
     } finally {
       setChecking(false);
     }

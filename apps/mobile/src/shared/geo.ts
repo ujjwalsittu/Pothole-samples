@@ -70,3 +70,64 @@ export function trackSpeedsKmph(track: GpsPoint[]): { avg: number; max: number }
 export function hasMockedFix(track: GpsPoint[]): boolean {
   return track.some((p) => p.mocked);
 }
+
+const GEOHASH_BASE32 = '0123456789bcdefghjkmnpqrstuvwxyz';
+
+/** Standard geohash encoding. Precision 7 ≈ 150 m cells. */
+export function geohashEncode(lat: number, lng: number, precision: number): string {
+  let latMin = -90, latMax = 90, lngMin = -180, lngMax = 180;
+  let hash = '';
+  let bit = 0, ch = 0, even = true;
+  while (hash.length < precision) {
+    if (even) {
+      const mid = (lngMin + lngMax) / 2;
+      if (lng >= mid) { ch = (ch << 1) | 1; lngMin = mid; } else { ch = ch << 1; lngMax = mid; }
+    } else {
+      const mid = (latMin + latMax) / 2;
+      if (lat >= mid) { ch = (ch << 1) | 1; latMin = mid; } else { ch = ch << 1; latMax = mid; }
+    }
+    even = !even;
+    if (++bit === 5) { hash += GEOHASH_BASE32[ch]; bit = 0; ch = 0; }
+  }
+  return hash;
+}
+
+/** Center point of a geohash cell. */
+export function geohashDecode(hash: string): { lat: number; lng: number } {
+  let latMin = -90, latMax = 90, lngMin = -180, lngMax = 180;
+  let even = true;
+  for (const c of hash) {
+    const idx = GEOHASH_BASE32.indexOf(c);
+    for (let b = 4; b >= 0; b--) {
+      const bitVal = (idx >> b) & 1;
+      if (even) {
+        const mid = (lngMin + lngMax) / 2;
+        if (bitVal === 1) lngMin = mid; else lngMax = mid;
+      } else {
+        const mid = (latMin + latMax) / 2;
+        if (bitVal === 1) latMin = mid; else latMax = mid;
+      }
+      even = !even;
+    }
+  }
+  return { lat: (latMin + latMax) / 2, lng: (lngMin + lngMax) / 2 };
+}
+
+/** Ray-casting point-in-polygon on lat/lng vertices (campaign zones). */
+export function pointInPolygon(
+  lat: number,
+  lng: number,
+  polygon: Array<{ lat: number; lng: number }>,
+): boolean {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const a = polygon[i], b = polygon[j];
+    if (
+      a.lng > lng !== b.lng > lng &&
+      lat < ((b.lat - a.lat) * (lng - a.lng)) / (b.lng - a.lng) + a.lat
+    ) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
