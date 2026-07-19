@@ -12,6 +12,7 @@ import { OverviewPage } from './pages/Overview';
 import { PackagesPage } from './pages/Packages';
 import { ReviewQueuePage } from './pages/ReviewQueue';
 import { SamplesPage } from './pages/Samples';
+import { ServicesPage } from './pages/Services';
 import { SettlementsPage } from './pages/Settlements';
 
 export function App() {
@@ -31,6 +32,7 @@ export function App() {
               <Route path="/leaderboard" element={<LeaderboardPage />} />
               <Route path="/settlements" element={<SettlementsPage />} />
               <Route path="/datasets" element={<DatasetsPage />} />
+              <Route path="/services" element={<ServicesPage />} />
               <Route path="/exports" element={<ExportsPage />} />
               <Route path="/audit" element={<AuditPage />} />
               <Route path="*" element={<Navigate to="/" replace />} />

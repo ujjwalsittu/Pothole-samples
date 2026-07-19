@@ -8,6 +8,8 @@ import type {
   GpsPoint,
   LeaderboardEntry,
   LedgerEntry,
+  ModelRelease,
+  OsrmStatus,
   PackageInfo,
   PolygonPoint,
   PotholeEstimate,
@@ -452,6 +454,95 @@ export function runMapMatch(sampleIds?: string[]): Promise<Record<string, unknow
     '/api/v1/admin/postprocess/map-match',
     jsonInit('POST', sampleIds && sampleIds.length > 0 ? { sampleIds } : {}),
   );
+}
+
+/* ---------------- OSRM service manager ---------------- */
+
+export function getOsrmStatus(): Promise<OsrmStatus> {
+  return request<OsrmStatus>('/api/v1/admin/osrm/status');
+}
+
+export function osrmDownload(url: string): Promise<unknown> {
+  return request('/api/v1/admin/osrm/download', jsonInit('POST', { url }));
+}
+
+/** 202-accepted job; poll getOsrmStatus. Throws ApiError OSRM_RUNNER_UNAVAILABLE (501) without binaries/docker. */
+export function osrmPreprocess(): Promise<unknown> {
+  return request('/api/v1/admin/osrm/preprocess', jsonInit('POST', {}));
+}
+
+export function osrmServe(): Promise<unknown> {
+  return request('/api/v1/admin/osrm/serve', jsonInit('POST', {}));
+}
+
+export function osrmStop(): Promise<unknown> {
+  return request('/api/v1/admin/osrm/stop', jsonInit('POST', {}));
+}
+
+/* ---------------- model releases (on-device TFLite, OTA) ---------------- */
+
+export async function listModels(): Promise<ModelRelease[]> {
+  const data = await request<unknown>('/api/v1/admin/models');
+  return asArray(data) as ModelRelease[];
+}
+
+export function activateModel(id: string): Promise<unknown> {
+  return request(`/api/v1/admin/models/${id}/activate`, jsonInit('POST', {}));
+}
+
+/** The release the mobile app currently fetches OTA. 404-tolerant (none published yet). */
+export async function getLatestModel(): Promise<ModelRelease | null> {
+  try {
+    const data = await request<unknown>('/api/v1/models/latest');
+    const obj = (data && typeof data === 'object' ? data : null) as ModelRelease | null;
+    return obj && typeof obj.id === 'string' ? obj : null;
+  } catch (err) {
+    if (isApiError(err) && err.status === 404) return null;
+    throw err;
+  }
+}
+
+export interface UploadProgress {
+  sentBytes: number;
+  totalBytes: number;
+}
+
+/** Multipart model upload with real upload progress (XHR — fetch cannot report it). */
+export async function uploadModel(
+  file: File,
+  notes: string,
+  onProgress?: (p: UploadProgress) => void,
+): Promise<unknown> {
+  const headers = await authHeaders();
+  const form = new FormData();
+  form.append('file', file, file.name);
+  form.append('notes', notes);
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${API_URL}/api/v1/admin/models`);
+    for (const [k, v] of Object.entries(headers)) xhr.setRequestHeader(k, v);
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress?.({ sentBytes: e.loaded, totalBytes: e.total });
+    };
+    xhr.onerror = () => reject(new ApiError('NETWORK', `Cannot reach API at ${API_URL}`, 0));
+    xhr.onload = () => {
+      let body: unknown = null;
+      try {
+        body = JSON.parse(xhr.responseText);
+      } catch {
+        /* non-JSON */
+      }
+      const env = body as Partial<ApiResponse<unknown>> | null;
+      if (env && env.ok === true && 'data' in env) return resolve((env as { data: unknown }).data);
+      if (env && env.ok === false && env.error) {
+        const e = env.error as { code?: string; message?: string };
+        return reject(new ApiError(e.code || 'UNKNOWN', e.message || 'Upload failed', xhr.status));
+      }
+      if (xhr.status >= 200 && xhr.status < 300) return resolve(body);
+      reject(new ApiError(`HTTP_${xhr.status}`, `Upload failed with status ${xhr.status}`, xhr.status));
+    };
+    xhr.send(form);
+  });
 }
 
 /* ---------------- packages ---------------- */

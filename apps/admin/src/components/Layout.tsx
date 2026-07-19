@@ -14,6 +14,7 @@ const NAV = [
   { to: '/leaderboard', label: 'Leaderboard', icon: '🏆' },
   { to: '/settlements', label: 'Settlements', icon: '₹' },
   { to: '/datasets', label: 'Datasets', icon: '🎓' },
+  { to: '/services', label: 'Services', icon: '⚙' },
   { to: '/exports', label: 'Exports', icon: '⇩' },
   { to: '/audit', label: 'Audit', icon: '☲' },
 ] as const;
@@ -29,6 +30,7 @@ const TITLES: Record<string, string> = {
   '/leaderboard': 'Leaderboard',
   '/settlements': 'Settlements',
   '/datasets': 'Datasets',
+  '/services': 'Services',
   '/exports': 'Exports',
   '/audit': 'Audit log',
 };

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import type { DatasetManifest } from '@pothole/shared';
+import type { DatasetManifest, ExportFormat } from '@pothole/shared';
 import { DATASET_SPLIT } from '@pothole/shared';
 import {
   datasetManifestPath,
@@ -12,7 +12,18 @@ import {
 import { AuthedDownloadButton } from '../components/AuthedDownloadButton';
 import { Chip, EmptyState, ErrorState, LoadingPanel, formatDate } from '../components/ui';
 
+const FORMAT_OPTIONS: { key: ExportFormat; label: string }[] = [
+  { key: 'coco', label: 'COCO (also what PyTorch uses)' },
+  { key: 'yolo', label: 'YOLO' },
+  { key: 'voc', label: 'Pascal VOC' },
+];
+
 export function DatasetsPage() {
+  const [formats, setFormats] = useState<Record<ExportFormat, boolean>>({
+    coco: true,
+    yolo: true,
+    voc: true,
+  });
   const [datasets, setDatasets] = useState<DatasetManifest[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
@@ -78,11 +89,37 @@ export function DatasetsPage() {
             {DATASET_SPLIT.GEO_PRECISION} bucket, never randomly) and a <span className="mono">manifest.json</span>.
             Every export is recorded below.
           </p>
-          <AuthedDownloadButton
-            path="/api/v1/admin/export/training.zip"
-            filename={`potholecollect-training-${new Date().toISOString().slice(0, 10)}.zip`}
-            label="⇩ Download training.zip"
-          />
+          <div className="row gap wrap format-picks">
+            <span className="muted small">Label formats:</span>
+            {FORMAT_OPTIONS.map((f) => (
+              <label key={f.key} className="check-label">
+                <input
+                  type="checkbox"
+                  checked={formats[f.key]}
+                  onChange={(e) => setFormats((prev) => ({ ...prev, [f.key]: e.target.checked }))}
+                />
+                <span className="small">{f.label}</span>
+              </label>
+            ))}
+          </div>
+          {(() => {
+            const selected = FORMAT_OPTIONS.map((f) => f.key).filter((k) => formats[k]);
+            return selected.length === 0 ? (
+              <button className="btn btn-primary" disabled title="Pick at least one label format">
+                ⇩ Download training.zip
+              </button>
+            ) : (
+              <AuthedDownloadButton
+                path={`/api/v1/admin/export/training.zip?formats=${selected.join(',')}`}
+                filename={`potholecollect-training-${new Date().toISOString().slice(0, 10)}.zip`}
+                label="⇩ Download training.zip"
+              />
+            );
+          })()}
+          <p className="muted small">
+            TensorFlow users: the bundle includes a <span className="mono">TFRecord</span> converter
+            script — run it on the COCO output.
+          </p>
         </div>
         <div className="card export-bundle">
           <div className="row between wrap gap">

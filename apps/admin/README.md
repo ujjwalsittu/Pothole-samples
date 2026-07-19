@@ -65,6 +65,17 @@ Powered by Threemates Tech Ventures · v1.0.0
 - **Settlements two-admin flow** — settlements ≥ ₹5000 wait for a second
   admin's confirmation; the initiator's Confirm button is disabled with an
   explanatory tooltip, and history shows who confirmed.
+- **Services** — OSRM map-matching manager (runner detection
+  binaries/docker/unavailable, external OSRM_URL notice, guided
+  download→preprocess→serve flow with live 2-second polling, Geofabrik region
+  download with progress, extract→partition→customize stage indicator,
+  start/stop with pid, run-map-matching shortcut) and on-device TFLite model
+  releases (upload with real progress, versioned table with sha256/notes/ACTIVE
+  badge, one-click activate; the active release is OTA-fetched by the mobile
+  app — contract [1,224,224,3] u8 → [roadProb, potholeProb]).
+- **Export formats** — the training bundle can be limited to COCO (PyTorch),
+  YOLO and/or Pascal VOC via checkboxes (`?formats=`); a TFRecord converter
+  script ships inside the bundle for TensorFlow users.
 - **Audit log** — filterable admin action trail (server-side action prefix,
   client-side actor filter), pretty-printed JSON detail expanders and
   cursor-based "load more".
