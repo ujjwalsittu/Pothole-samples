@@ -30,7 +30,6 @@ export default function SignupDetailsScreen() {
 
   const [fullName, setFullName] = useState('');
   const [photoUri, setPhotoUri] = useState<string | null>(null);
-  const [photoBase64, setPhotoBase64] = useState<string | null>(null);
   const [occupation, setOccupation] = useState<Occupation>('student');
   const [organization, setOrganization] = useState('');
   const [mobile, setMobile] = useState('');
@@ -57,11 +56,9 @@ export default function SignupDetailsScreen() {
       allowsEditing: true,
       aspect: [1, 1],
       quality: 0.7,
-      base64: true,
     });
     if (!res.canceled && res.assets[0]) {
       setPhotoUri(res.assets[0].uri);
-      setPhotoBase64(res.assets[0].base64 ?? null);
     }
   };
 
@@ -105,7 +102,7 @@ export default function SignupDetailsScreen() {
 
       const user = await signupComplete({
         fullName: fullName.trim(),
-        photoBase64,
+        photoUri,
         collectorStatus: occupation,
         organization: organization.trim().length > 0 ? organization.trim() : null,
         mobile: mobile.trim(),

@@ -27,8 +27,8 @@ export function getMe(): Promise<MeResponse> {
 
 export interface SignupCompleteBody {
   fullName: string;
-  /** Base64-encoded JPEG profile photo (optional). */
-  photoBase64: string | null;
+  /** Local file URI of the profile photo (optional). */
+  photoUri: string | null;
   collectorStatus: Exclude<CollectorStatus, 'owner'>;
   /** Required for students (College/University), optional for professionals. */
   organization: string | null;
@@ -40,18 +40,41 @@ export interface SignupCompleteBody {
   deviceFingerprint: Record<string, unknown> | null;
 }
 
+/** Append a local image file to a multipart form under `photo`. */
+function appendPhoto(form: FormData, uri: string): void {
+  const ext = /\.(\w+)(?:\?|$)/.exec(uri)?.[1]?.toLowerCase() ?? 'jpg';
+  const type = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
+  // React Native FormData file descriptor — not a web File/Blob.
+  form.append('photo', { uri, name: `photo.${ext}`, type } as unknown as Blob);
+}
+
+/** The signup/profile endpoints are multipart on the server (multer). */
 export function signupComplete(body: SignupCompleteBody): Promise<MeResponse> {
-  return api<MeResponse>('/auth/signup-complete', { method: 'POST', body });
+  const form = new FormData();
+  form.append('fullName', body.fullName);
+  form.append('collectorStatus', body.collectorStatus);
+  if (body.organization != null) form.append('organization', body.organization);
+  form.append('mobile', body.mobile);
+  form.append('whatsappAvailable', String(body.whatsappAvailable));
+  if (body.signupLocation != null) form.append('signupLocation', JSON.stringify(body.signupLocation));
+  if (body.deviceFingerprint != null) form.append('deviceFingerprint', JSON.stringify(body.deviceFingerprint));
+  if (body.photoUri != null) appendPhoto(form, body.photoUri);
+  return api<MeResponse>('/auth/signup-complete', { method: 'POST', formBody: form });
 }
 
 export interface PatchMeBody {
   fullName?: string;
   upiId?: string;
-  photoBase64?: string;
+  /** Local file URI of a new profile photo. */
+  photoUri?: string;
 }
 
 export function patchMe(body: PatchMeBody): Promise<MeResponse> {
-  return api<MeResponse>('/me', { method: 'PATCH', body });
+  const form = new FormData();
+  if (body.fullName != null) form.append('fullName', body.fullName);
+  if (body.upiId != null) form.append('upiId', body.upiId);
+  if (body.photoUri != null) appendPhoto(form, body.photoUri);
+  return api<MeResponse>('/me', { method: 'PATCH', formBody: form });
 }
 
 // ---------- campaigns / gamification / push ----------

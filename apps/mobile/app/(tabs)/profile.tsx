@@ -23,7 +23,8 @@ export default function ProfileScreen() {
   const [fullName, setFullName] = useState(profile?.fullName ?? '');
   const [upiId, setUpiId] = useState(profile?.upiId ?? '');
   const [photoUri, setPhotoUri] = useState<string | null>(null);
-  const [photoBase64, setPhotoBase64] = useState<string | null>(null);
+  /** Newly picked photo not yet saved to the server. */
+  const [pendingPhotoUri, setPendingPhotoUri] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [modelMeta, setModelMeta] = useState<InstalledModelMeta | null>(null);
@@ -44,11 +45,10 @@ export default function ProfileScreen() {
       allowsEditing: true,
       aspect: [1, 1],
       quality: 0.7,
-      base64: true,
     });
     if (!res.canceled && res.assets[0]) {
       setPhotoUri(res.assets[0].uri);
-      setPhotoBase64(res.assets[0].base64 ?? null);
+      setPendingPhotoUri(res.assets[0].uri);
     }
   };
 
@@ -68,11 +68,11 @@ export default function ProfileScreen() {
         fullName: fullName.trim(),
         // UPI is a collector-only field; never send it for regular users.
         ...(profile?.isCollector ? { upiId: upiId.trim() } : {}),
-        ...(photoBase64 ? { photoBase64 } : {}),
+        ...(pendingPhotoUri ? { photoUri: pendingPhotoUri } : {}),
       });
       setProfile(updated);
       setEditing(false);
-      setPhotoBase64(null);
+      setPendingPhotoUri(null);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'Could not save changes.');
     } finally {
@@ -137,7 +137,7 @@ export default function ProfileScreen() {
                   setFullName(profile?.fullName ?? '');
                   setUpiId(profile?.upiId ?? '');
                   setPhotoUri(null);
-                  setPhotoBase64(null);
+                  setPendingPhotoUri(null);
                   setError(null);
                 }}
                 style={styles.editBtn}

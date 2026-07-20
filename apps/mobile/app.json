@@ -13,7 +13,9 @@
       "resizeMode": "cover",
       "backgroundColor": "#0B1220"
     },
-    "assetBundlePatterns": ["**/*"],
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.threemates.potholecollect",
@@ -32,7 +34,9 @@
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.ACCESS_FINE_LOCATION",
-        "android.permission.RECORD_AUDIO"
+        "android.permission.RECORD_AUDIO",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.MODIFY_AUDIO_SETTINGS"
       ]
     },
     "plugins": [
@@ -72,13 +76,17 @@
       ]
     ],
     "extra": {
-      "apiUrl": "https://api-potholes.threemates.in",
+      "apiUrl": "https://api-potholes.threemates.in/api/v1",
       "auth0Domain": "tmv.jp.auth0.com",
       "auth0ClientId": "qDn3qug1tBxuBDKdAjJhJxBGl60MQhQ4",
-      "auth0Audience": "https://tmv.jp.auth0.com/api/v2/",
+      "auth0Audience": "https://api-potholes.threemates.in",
       "router": {
         "origin": false
+      },
+      "eas": {
+        "projectId": "15f90876-5a0c-491b-8faf-4480d067453c"
       }
-    }
+    },
+    "owner": "ujjwal-tmv"
   }
 }

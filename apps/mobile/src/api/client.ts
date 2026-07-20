@@ -39,6 +39,8 @@ export interface RequestOptions {
   body?: unknown;
   /** Raw string body (e.g. base64 chunk) sent as text/plain instead of JSON. */
   rawBody?: string;
+  /** Multipart body (file uploads). Content-Type is left to fetch so the boundary is set. */
+  formBody?: FormData;
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -56,8 +58,10 @@ export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T
   };
   if (token) headers.Authorization = `Bearer ${token}`;
 
-  let body: string | undefined;
-  if (opts.rawBody != null) {
+  let body: string | FormData | undefined;
+  if (opts.formBody != null) {
+    body = opts.formBody;
+  } else if (opts.rawBody != null) {
     headers['Content-Type'] = headers['Content-Type'] ?? 'text/plain';
     body = opts.rawBody;
   } else if (opts.body !== undefined) {
