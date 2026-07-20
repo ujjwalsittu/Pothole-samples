@@ -225,7 +225,7 @@ export function postAnnotations(sampleId: string, annotations: AnnotationUpload[
 // ---------- admin ----------
 
 export function adminPendingUsers(): Promise<User[]> {
-  return api<User[]>('/admin/users/pending');
+  return api<User[]>('/admin/users?state=pending_approval');
 }
 
 export function adminApproveUser(userId: string): Promise<User> {
@@ -237,5 +237,8 @@ export function adminRejectUser(userId: string, reason: string): Promise<User> {
 }
 
 export function adminPendingSamplesCount(): Promise<{ pendingReview: number }> {
-  return api<{ pendingReview: number }>('/admin/samples/pending-count');
+  // No dedicated count route — derive from the pending-review listing.
+  return api<unknown[]>('/admin/samples?state=pending_review').then((rows) => ({
+    pendingReview: rows.length,
+  }));
 }

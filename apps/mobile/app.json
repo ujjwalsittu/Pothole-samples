@@ -70,7 +70,7 @@
       [
         "react-native-auth0",
         {
-          "domain": "tmv-jp.auth0.com",
+          "domain": "tmv.jp.auth0.com",
           "customScheme": "potholecollect"
         }
       ]

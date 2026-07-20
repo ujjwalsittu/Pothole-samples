@@ -61,7 +61,8 @@ export default function PhotoCaptureScreen() {
         lat: fix.coords.latitude,
         lng: fix.coords.longitude,
         accuracyM: fix.coords.accuracy ?? 999,
-        mocked: fix.mocked === true,
+        mocked: false, // mocked fixes are rejected above
+
       });
       router.replace('/capture/annotate-photo');
     } catch {
