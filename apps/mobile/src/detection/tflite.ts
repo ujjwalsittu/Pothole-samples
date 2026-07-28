@@ -20,6 +20,7 @@
 import * as FileSystem from 'expo-file-system';
 import { HeuristicAdvisor } from './heuristic';
 import { readInstalledModelMeta } from './meta';
+import { loadTensorflowModel } from './tflite-module';
 import { TFLITE_MODEL_PATH } from './paths';
 import { SsdCocoAdvisor } from './ssd-coco';
 import type { AdvisorFrame, AdvisorResult, FrameAdvisor } from './types';
@@ -38,22 +39,12 @@ interface TfliteModuleLike {
 }
 
 /**
- * Resolve the optional native module without letting Metro statically bundle
- * it: a variable specifier keeps the require dynamic, and the try/catch
- * absorbs the runtime "unknown module" error on builds without the package.
+ * The native runtime is an explicit opt-in via tflite-module.ts (a dynamic
+ * require here would crash Metro builds without the package — see that file
+ * for the one-line enable instructions).
  */
 function tryRequireTflite(): TfliteModuleLike | null {
-  try {
-    const moduleName = 'react-native-fast-tflite';
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const mod = (require as (name: string) => unknown)(moduleName);
-    if (mod && typeof (mod as TfliteModuleLike).loadTensorflowModel === 'function') {
-      return mod as TfliteModuleLike;
-    }
-    return null;
-  } catch {
-    return null;
-  }
+  return typeof loadTensorflowModel === 'function' ? { loadTensorflowModel } : null;
 }
 
 /** Binary road/pothole classifier: [1,224,224,3]u8 → [roadProb, potholeProb]. */

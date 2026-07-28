@@ -7,7 +7,7 @@ import Animated, { FadeInDown } from 'react-native-reanimated';
 import { ProgressBar } from '@/components/ProgressBar';
 import { CoachMark, useCoachMark } from '@/components/CoachMark';
 import { Skeleton } from '@/components/Skeleton';
-import { FlameIcon } from './ranks';
+import { FlameIcon } from '@/components/FlameIcon';
 import {
   getDashboardStats,
   getMyStreak,
