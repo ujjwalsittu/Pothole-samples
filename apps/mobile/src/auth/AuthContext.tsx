@@ -68,11 +68,13 @@ function InnerAuthProvider({ children }: { children: React.ReactNode }) {
   const [error, setError] = useState<string | null>(null);
 
   const refreshProfile = useCallback(async (): Promise<AuthStatus> => {
-    const token = await getStoredToken();
-    if (!token) {
-      setProfileState(null);
-      setStatus('signedOut');
-      return 'signedOut';
+    if (!CONFIG.devAuthBypass) {
+      const token = await getStoredToken();
+      if (!token) {
+        setProfileState(null);
+        setStatus('signedOut');
+        return 'signedOut';
+      }
     }
     try {
       const me = await getMe();
@@ -113,12 +115,21 @@ function InnerAuthProvider({ children }: { children: React.ReactNode }) {
   const doAuthorize = useCallback(
     async (connection?: string) => {
       setError(null);
+      if (CONFIG.devAuthBypass) {
+        // Dev bypass: no Auth0 round-trip, just (re)fetch /me with the
+        // x-dev-sub/x-dev-email headers attached by api/client.ts.
+        await refreshProfile();
+        return;
+      }
       try {
-        const credentials = await authorize({
-          audience: CONFIG.auth0Audience,
-          scope: 'openid profile email offline_access',
-          ...(connection ? { connection } : {}),
-        });
+        const credentials = await authorize(
+          {
+            audience: CONFIG.auth0Audience,
+            scope: 'openid profile email offline_access',
+            ...(connection ? { connection } : {}),
+          },
+          { customScheme: CONFIG.auth0Scheme },
+        );
         if (!credentials?.accessToken) {
           setError('Login was cancelled.');
           return;
@@ -137,7 +148,7 @@ function InnerAuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = useCallback(async () => {
     try {
-      await clearSession();
+      await clearSession({}, { customScheme: CONFIG.auth0Scheme });
     } catch {
       // Session clearing can fail if the browser was dismissed; still log out locally.
     }

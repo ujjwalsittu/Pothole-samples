@@ -51,12 +51,17 @@ export interface RequestOptions {
  * envelopes, and code NETWORK / BAD_RESPONSE for transport-level failures.
  */
 export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T> {
-  const token = await getStoredToken();
   const headers: Record<string, string> = {
     Accept: 'application/json',
     ...(opts.headers ?? {}),
   };
-  if (token) headers.Authorization = `Bearer ${token}`;
+  if (CONFIG.devAuthBypass) {
+    headers['x-dev-sub'] = CONFIG.devSub;
+    headers['x-dev-email'] = CONFIG.devEmail;
+  } else {
+    const token = await getStoredToken();
+    if (token) headers.Authorization = `Bearer ${token}`;
+  }
 
   let body: string | FormData | undefined;
   if (opts.formBody != null) {

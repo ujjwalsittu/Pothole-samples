@@ -16,7 +16,15 @@ let cached: FrameAdvisor | null = null;
 
 export async function createFrameAdvisor(): Promise<FrameAdvisor> {
   if (cached) return cached;
-  cached = (await createTfliteAdvisor()) ?? new HeuristicAdvisor();
+  // Road guidance is an optional enhancement, so a failure loading the TFLite
+  // advisor must never take the capture screen down with it.
+  let advisor: FrameAdvisor | null = null;
+  try {
+    advisor = await createTfliteAdvisor();
+  } catch {
+    advisor = null;
+  }
+  cached = advisor ?? new HeuristicAdvisor();
   return cached;
 }
 

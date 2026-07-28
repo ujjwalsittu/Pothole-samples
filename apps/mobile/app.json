@@ -80,6 +80,8 @@
       "auth0Domain": "tmv.jp.auth0.com",
       "auth0ClientId": "qDn3qug1tBxuBDKdAjJhJxBGl60MQhQ4",
       "auth0Audience": "https://api-potholes.threemates.in",
+      "auth0Scheme": "potholecollect",
+      "devAuthBypass": false,
       "router": {
         "origin": false
       },
