@@ -18,6 +18,9 @@ export type QueueState =
 /** Everything the server needs, captured at draft time. */
 export interface SampleMeta {
   mediaType: MediaType;
+  /** Content type of the stored file — the server derives the storage
+   * extension from it, so it must be one it knows (image/jpeg, video/mp4). */
+  mediaMime: string;
   capturedAt: string; // ISO
   lat: number;
   lng: number;
@@ -31,7 +34,15 @@ export interface SampleMeta {
   sha256: string;
   phash: string | null;
   track: GpsPoint[] | null;
+  /** Wall-clock ms at which video recording began; anchors videoTimeSec to
+   * the GPS track server-side. Null for photos. */
+  recordingStartMs: number | null;
   annotations: AnnotationUpload[];
+}
+
+/** Fallback mime for drafts queued before mediaMime was persisted. */
+export function defaultMimeFor(mediaType: MediaType): string {
+  return mediaType === 'photo' ? 'image/jpeg' : 'video/mp4';
 }
 
 export interface QueueItem {
@@ -129,5 +140,10 @@ export function deleteQueueItem(id: string): void {
 }
 
 export function parseMeta(item: QueueItem): SampleMeta {
-  return JSON.parse(item.metaJson) as SampleMeta;
+  const meta = JSON.parse(item.metaJson) as SampleMeta;
+  // Drafts queued by an older build predate these fields; backfill so their
+  // retry produces a payload the server accepts.
+  meta.mediaMime ??= defaultMimeFor(meta.mediaType);
+  meta.recordingStartMs ??= meta.track?.[0]?.t ?? null;
+  return meta;
 }

@@ -5,6 +5,7 @@ import type {
   Campaign,
   CollectorStatus,
   DashboardStats,
+  GpsPoint,
   LeaderboardEntry,
   LedgerEntry,
   ModelKind,
@@ -167,38 +168,59 @@ export function getLedger(): Promise<LedgerResponse> {
 
 // ---------- upload pipeline ----------
 
+/**
+ * Mirrors the API's `initSchema` (apps/api/src/routes/samples.ts). Fields the
+ * server derives itself — speeds (from the track) and pothole count (from the
+ * annotations) — are deliberately absent: sending them is silently ignored.
+ */
 export interface SampleInitBody {
-  clientSampleId: string;
   mediaType: 'photo' | 'video';
+  /** Content type of the upload; the server picks the storage extension from
+   * it, so it must be one of the mimes it maps (image/jpeg, video/mp4, ...). */
+  mediaMime: string;
   sha256: string;
   phash: string | null;
   sizeBytes: number;
-  totalChunks: number;
   capturedAt: string;
   lat: number;
   lng: number;
   gpsAccuracyM: number;
   mockLocationDetected: boolean;
-  durationSec: number | null;
-  avgSpeedKmph: number | null;
-  maxSpeedKmph: number | null;
-  potholeCount: number;
-  /** Full GPS track for videos (JSON), null for photos. */
-  track: unknown | null;
+  /** Required for videos — the server rejects a video without one. */
+  durationSec?: number;
+  /** Required for videos (>= 2 points), omitted for photos. */
+  gpsTrack?: {
+    recordingStartMs: number;
+    points: GpsPoint[];
+  };
 }
 
 export interface SampleInitResponse {
   sampleId: string;
-  /** Chunks the server already has (resume support). */
-  uploadedChunks: number;
+  /** Server-side chunk size; authoritative over the local constant. */
+  chunkBytes: number;
+  /** Bytes already stored — non-zero when resuming an interrupted upload. */
+  receivedBytes: number;
+  resumed?: boolean;
 }
 
 export function initSample(body: SampleInitBody): Promise<SampleInitResponse> {
   return api<SampleInitResponse>('/samples/init', { method: 'POST', body });
 }
 
-export function uploadChunk(sampleId: string, index: number, base64: string): Promise<{ received: number }> {
-  return api<{ received: number }>(`/samples/${sampleId}/chunks/${index}`, {
+export interface ChunkAck {
+  sampleId: string;
+  chunkBytes: number;
+  receivedBytes: number;
+}
+
+/**
+ * Chunks travel base64-encoded — expo-file-system can only read a byte range
+ * out of a file as a base64 string. The `;base64` content-type parameter is
+ * what tells the server to decode before writing at the byte offset.
+ */
+export function uploadChunk(sampleId: string, index: number, base64: string): Promise<ChunkAck> {
+  return api<ChunkAck>(`/samples/${sampleId}/chunks/${index}`, {
     method: 'PUT',
     rawBody: base64,
     headers: { 'Content-Type': 'application/octet-stream;base64' },

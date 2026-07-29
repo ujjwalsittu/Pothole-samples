@@ -270,9 +270,17 @@ samplesRouter.put(
     if (!Number.isInteger(index) || index < 0) {
       throw new ApiError(400, 'INVALID_CHUNK_INDEX', 'Chunk index must be a non-negative integer');
     }
-    const chunk = req.body as Buffer;
-    if (!Buffer.isBuffer(chunk) || chunk.length === 0) {
+    const raw = req.body as Buffer;
+    if (!Buffer.isBuffer(raw) || raw.length === 0) {
       throw new ApiError(400, 'EMPTY_CHUNK', 'Chunk body is empty');
+    }
+    // Mobile clients send base64 (expo-file-system can only read a byte range
+    // as a base64 string) and flag it with a `;base64` content-type parameter.
+    // Storing those ASCII bytes verbatim would corrupt the assembled file.
+    const isBase64 = /;\s*base64/i.test(req.get('content-type') ?? '');
+    const chunk = isBase64 ? Buffer.from(raw.toString('latin1'), 'base64') : raw;
+    if (chunk.length === 0) {
+      throw new ApiError(400, 'EMPTY_CHUNK', 'Chunk body decoded to zero bytes');
     }
 
     const offset = index * UPLOAD.CHUNK_BYTES;

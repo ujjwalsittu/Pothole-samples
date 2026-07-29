@@ -28,6 +28,7 @@ import { UPLOAD, type GpsPoint, type MediaType } from '@/shared';
 import {
   insertQueueItem,
   listQueue,
+  defaultMimeFor,
   parseMeta,
   pendingCount,
   updateQueueItem,
@@ -70,6 +71,8 @@ export interface DraftInput {
   avgSpeedKmph: number | null;
   maxSpeedKmph: number | null;
   track: GpsPoint[] | null;
+  /** Wall-clock ms when video recording started (null for photos). */
+  recordingStartMs: number | null;
   annotations: AnnotationUpload[];
 }
 
@@ -170,6 +173,7 @@ class UploadManager {
 
     const meta: SampleMeta = {
       mediaType: input.mediaType,
+      mediaMime: defaultMimeFor(input.mediaType),
       capturedAt: input.capturedAt,
       lat: input.lat,
       lng: input.lng,
@@ -185,6 +189,7 @@ class UploadManager {
       // (sharp) during auto-checks. Field kept for contract completeness.
       phash: null,
       track: input.track,
+      recordingStartMs: input.recordingStartMs,
       annotations: input.annotations,
     };
     // Persist metadata JSON alongside the media too (debuggability / recovery).
@@ -246,25 +251,30 @@ class UploadManager {
         updateQueueItem(item.id, { state: 'initializing' });
         this.notify();
         const res = await initSample({
-          clientSampleId: item.sampleLocalId,
           mediaType: meta.mediaType,
+          mediaMime: meta.mediaMime,
           sha256: meta.sha256,
           phash: meta.phash,
           sizeBytes: meta.sizeBytes,
-          totalChunks: item.totalChunks,
           capturedAt: meta.capturedAt,
           lat: meta.lat,
           lng: meta.lng,
           gpsAccuracyM: meta.gpsAccuracyM,
           mockLocationDetected: meta.mockLocationDetected,
-          durationSec: meta.durationSec,
-          avgSpeedKmph: meta.avgSpeedKmph,
-          maxSpeedKmph: meta.maxSpeedKmph,
-          potholeCount: meta.potholeCount,
-          track: meta.track,
+          ...(meta.durationSec != null ? { durationSec: meta.durationSec } : {}),
+          ...(meta.track && meta.track.length > 0
+            ? {
+                gpsTrack: {
+                  recordingStartMs: meta.recordingStartMs ?? meta.track[0].t,
+                  points: meta.track,
+                },
+              }
+            : {}),
         });
         serverSampleId = res.sampleId;
-        uploadedChunks = res.uploadedChunks ?? 0;
+        // The server reports progress in bytes, not chunks. Only whole chunks
+        // count as done — a partial tail must be re-sent from its start.
+        uploadedChunks = Math.floor((res.receivedBytes ?? 0) / UPLOAD.CHUNK_BYTES);
         updateQueueItem(item.id, { serverSampleId, uploadedChunks, state: 'uploading' });
         this.notify();
       } else {

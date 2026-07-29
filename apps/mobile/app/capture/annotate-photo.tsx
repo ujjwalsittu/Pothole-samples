@@ -173,6 +173,7 @@ export default function AnnotatePhotoScreen() {
         avgSpeedKmph: null,
         maxSpeedKmph: null,
         track: null,
+        recordingStartMs: null,
         annotations,
       });
       clearCapture();

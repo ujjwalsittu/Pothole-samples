@@ -142,6 +142,7 @@ export default function AnnotateVideoScreen() {
         avgSpeedKmph: Math.round(speeds.avg * 10) / 10,
         maxSpeedKmph: Math.round(speeds.max * 10) / 10,
         track: capture.track,
+        recordingStartMs: capture.recordingStartMs,
         annotations,
       });
       clearCapture();
