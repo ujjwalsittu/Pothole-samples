@@ -6,7 +6,7 @@
  */
 
 export const APP_NAME = 'PotholeCollect';
-export const POWERED_BY = 'Threemates Tech Ventures';
+export const POWERED_BY = 'Azeonics Private Limited';
 export const APP_VERSION = '1.0.0';
 export const API_VERSION = 'v1';
 
